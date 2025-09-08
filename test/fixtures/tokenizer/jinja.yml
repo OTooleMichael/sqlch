@@ -1,0 +1,86 @@
+file:
+  - name: simple_variable_substitution
+    sql: "SELECT * FROM {{ table_name }} WHERE id = {{ user_id }}"
+    tokens:
+      - type: Keyword
+        value: "SELECT"
+      - type: Operator
+        value: "*"
+      - type: Keyword
+        value: "FROM"
+      - type: TemplateVariable
+        value: "{{ table_name }}"
+      - type: Keyword
+        value: "WHERE"
+      - type: Identifier
+        value: "id"
+      - type: Operator
+        value: "="
+      - type: TemplateVariable
+        value: "{{ user_id }}"
+
+  - name: jinja_if_block
+    sql: "SELECT * FROM users {% if active %}WHERE active = true{% endif %}"
+    tokens:
+      - type: Keyword
+        value: "SELECT"
+      - type: Operator
+        value: "*"
+      - type: Keyword
+        value: "FROM"
+      - type: Identifier
+        value: "users"
+      - type: TemplateBlock
+        value: "{% if active %}"
+      - type: Keyword
+        value: "WHERE"
+      - type: Identifier
+        value: "active"
+      - type: Operator
+        value: "="
+      - type: Keyword
+        value: "true"
+      - type: TemplateBlock
+        value: "{% endif %}"
+
+  - name: jinja_for_loop
+    sql: "SELECT {% for col in columns %}{{ col }}{% if not loop.last %}, {% endif %}{% endfor %} FROM table1"
+    tokens:
+      - type: Keyword
+        value: "SELECT"
+      - type: TemplateBlock
+        value: "{% for col in columns %}"
+      - type: TemplateVariable
+        value: "{{ col }}"
+      - type: TemplateBlock
+        value: "{% if not loop.last %}"
+      - type: Punctuation
+        value: ","
+      - type: TemplateBlock
+        value: "{% endif %}"
+      - type: TemplateBlock
+        value: "{% endfor %}"
+      - type: Keyword
+        value: "FROM"
+      - type: Identifier
+        value: "table1"
+
+  - name: dbt_ref_function
+    sql: "SELECT * FROM {{ ref('users') }} WHERE status = {{ var('active_status') }}"
+    tokens:
+      - type: Keyword
+        value: "SELECT"
+      - type: Operator
+        value: "*"
+      - type: Keyword
+        value: "FROM"
+      - type: TemplateVariable
+        value: "{{ ref('users') }}"
+      - type: Keyword
+        value: "WHERE"
+      - type: Identifier
+        value: "status"
+      - type: Operator
+        value: "="
+      - type: TemplateVariable
+        value: "{{ var('active_status') }}"

@@ -1,0 +1,87 @@
+file:
+  - name: snowflake_stage_syntax
+    sql: "COPY INTO mytable FROM @mystage/path/file.csv.gz"
+    tokens:
+      - type: Keyword
+        value: "COPY"
+      - type: Keyword
+        value: "INTO"
+      - type: Identifier
+        value: "mytable"
+      - type: Keyword
+        value: "FROM"
+      - type: Operator
+        value: "@"
+      - type: Identifier
+        value: "mystage"
+      - type: Operator
+        value: "/"
+      - type: Identifier
+        value: "path"
+      - type: Operator
+        value: "/"
+      - type: Identifier
+        value: "file"
+      - type: Punctuation
+        value: "."
+      - type: Identifier
+        value: "csv"
+      - type: Punctuation
+        value: "."
+      - type: Identifier
+        value: "gz"
+
+  - name: snowflake_semi_structured
+    sql: "SELECT data:key.subkey::string FROM table1"
+    tokens:
+      - type: Keyword
+        value: "SELECT"
+      - type: Identifier
+        value: "data"
+      - type: Punctuation
+        value: ":"
+      - type: Identifier
+        value: "key"
+      - type: Punctuation
+        value: "."
+      - type: Identifier
+        value: "subkey"
+      - type: Operator
+        value: "::"
+      - type: Identifier
+        value: "string"
+      - type: Keyword
+        value: "FROM"
+      - type: Identifier
+        value: "table1"
+
+  - name: snowflake_variant_access
+    sql: "SELECT $1:name, $2:value FROM @mystage"
+    tokens:
+      - type: Keyword
+        value: "SELECT"
+      - type: Operator
+        value: "$"
+      - type: Number
+        value: "1"
+      - type: Punctuation
+        value: ":"
+      - type: Identifier
+        value: "name"
+      - type: Punctuation
+        value: ","
+      - type: Operator
+        value: "$"
+      - type: Number
+        value: "2"
+      - type: Punctuation
+        value: ":"
+      - type: Identifier
+        value: "value"
+      - type: Keyword
+        value: "FROM"
+      - type: Operator
+        value: "@"
+      - type: Identifier
+        value: "mystage"
+

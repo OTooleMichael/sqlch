@@ -1,0 +1,730 @@
+use std::collections::HashMap;
+use serde::Deserialize;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenType {
+    Keyword,
+    Identifier,
+    StringLiteral,
+    Number,
+    Operator,
+    Punctuation,
+    Whitespace,
+    Comment,
+    TemplateVariable,
+    TemplateBlock,
+    EOF,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Token<'a> {
+    pub token_type: TokenType,
+    pub value: &'a str,
+    pub start: usize,
+}
+
+#[derive(Debug)]
+pub struct TokenizerResult<'a> {
+    pub tokens: Vec<Token<'a>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestCase {
+    name: String,
+    sql: String,
+    tokens: Vec<TestToken>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestToken {
+    #[serde(rename = "type")]
+    token_type: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestFile {
+    file: Vec<TestCase>,
+}
+
+#[derive(Debug)]
+pub struct Tokenizer<'a> {
+    input: &'a str,
+    position: usize,
+    keywords: HashMap<&'a str, bool>,
+}
+
+impl<'a> Tokenizer<'a> {
+    pub fn new(input: &'a str) -> Self {
+        let mut keywords = HashMap::new();
+        // Add SQL keywords
+        for kw in &[
+            "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+            "DISTINCT", "TRUE", "FALSE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON",
+            "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "UNION", "GROUP", "BY", "ORDER",
+            "HAVING", "LIMIT", "OFFSET", "WITH", "CTE", "CASE", "WHEN", "THEN", "ELSE", "END",
+            "COPY", "INTO", "VALUES", "SET"
+        ] {
+            keywords.insert(*kw, true);
+        }
+
+        Self {
+            input,
+            position: 0,
+            keywords,
+        }
+    }
+
+    pub fn tokenize(&mut self) -> TokenizerResult<'a> {
+        let mut tokens = Vec::new();
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('{') if self.peek() == Some('{') => {
+                    tokens.push(self.tokenize_template_variable());
+                }
+                Some('{') if self.peek() == Some('%') => {
+                    tokens.push(self.tokenize_template_block());
+                }
+                Some(c) if c.is_whitespace() => {
+                    tokens.push(self.tokenize_whitespace());
+                }
+                Some(c) if c.is_alphabetic() || c == '_' => {
+                    tokens.push(self.tokenize_identifier_or_keyword());
+                }
+                Some(c) if c.is_digit(10) => {
+                    tokens.push(self.tokenize_number());
+                }
+                Some('"') | Some('\'') => {
+                    tokens.push(self.tokenize_string());
+                }
+                Some('-') if self.peek() == Some('-') => {
+                    tokens.push(self.tokenize_comment());
+                }
+                Some('/') if self.peek() == Some('*') => {
+                    tokens.push(self.tokenize_multiline_comment());
+                }
+                Some(':') if self.peek() == Some(':') => {
+                    tokens.push(self.tokenize_operator());
+                }
+                Some(':') => {
+                    let start = self.position;
+                    self.advance();
+                    let end = self.position;
+                    tokens.push(Token {
+                        token_type: TokenType::Punctuation,
+                        value: &self.input[start..end],
+                        start,
+                    });
+                }
+                Some(c) if "+-*/=<>!@".contains(c) => {
+                    tokens.push(self.tokenize_operator());
+                }
+                Some(c) if "(),.;".contains(c) => {
+                    let start = self.position;
+                    self.advance();
+                    let end = self.position;
+                    tokens.push(Token {
+                        token_type: TokenType::Punctuation,
+                        value: &self.input[start..end],
+                        start,
+                    });
+                }
+                _ => {
+                    // Unknown token, skip or error
+                    self.advance();
+                }
+            }
+        }
+        let eof_start = self.position;
+        tokens.push(Token {
+            token_type: TokenType::EOF,
+            value: "",
+            start: eof_start,
+        });
+        TokenizerResult { tokens }
+    }
+
+    fn current_char(&self) -> Option<char> {
+        self.input.chars().nth(self.position)
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.input.chars().nth(self.position + 1)
+    }
+
+    fn advance(&mut self) {
+        self.position += 1;
+    }
+
+    fn tokenize_whitespace(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c.is_whitespace()) {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Whitespace,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_identifier_or_keyword(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            self.advance();
+        }
+        let end = self.position;
+        let ident = &self.input[start..end];
+
+        // Check if it's a keyword (case-insensitive comparison)
+        let ident_upper = ident.to_uppercase();
+        if self.keywords.contains_key(ident_upper.as_str()) {
+            Token {
+                token_type: TokenType::Keyword,
+                value: ident,
+                start,
+            }
+        } else {
+            Token {
+                token_type: TokenType::Identifier,
+                value: ident,
+                start,
+            }
+        }
+    }
+
+    fn tokenize_number(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c.is_digit(10) || c == '.') {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Number,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_string(&mut self) -> Token<'a> {
+        let quote = self.current_char().unwrap();
+        self.advance(); // consume opening quote
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c != quote) {
+            self.advance();
+        }
+        let end = self.position;
+        self.advance(); // consume closing quote
+        Token {
+            token_type: TokenType::StringLiteral,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_operator(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| "+-*/=<>!@".contains(c)) {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Operator,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_comment(&mut self) -> Token<'a> {
+        self.advance(); // consume first -
+        self.advance(); // consume second -
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c != '\n') {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Comment,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_multiline_comment(&mut self) -> Token<'a> {
+        self.advance(); // consume /
+        self.advance(); // consume *
+        let start = self.position;
+        while !(self.current_char() == Some('*') && self.peek() == Some('/')) {
+            self.advance();
+        }
+        let end = self.position;
+        self.advance(); // consume *
+        self.advance(); // consume /
+        Token {
+            token_type: TokenType::Comment,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_template_variable(&mut self) -> Token<'a> {
+        let start = self.position;
+        self.advance(); // consume first {
+        self.advance(); // consume second {
+
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('}') if self.peek() == Some('}') => {
+                    self.advance(); // consume first }
+                    self.advance(); // consume second }
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.position;
+        Token {
+            token_type: TokenType::TemplateVariable,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_template_block(&mut self) -> Token<'a> {
+        let start = self.position;
+        self.advance(); // consume first {
+        self.advance(); // consume %
+
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('%') if self.peek() == Some('}') => {
+                    self.advance(); // consume %
+                    self.advance(); // consume }
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.position;
+        Token {
+            token_type: TokenType::TemplateBlock,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_whitespace(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c.is_whitespace()) {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Whitespace,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_number(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c.is_digit(10) || c == '.') {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Number,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_string(&mut self) -> Token<'a> {
+        let quote = self.current_char().unwrap();
+        self.advance(); // consume opening quote
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c != quote) {
+            self.advance();
+        }
+        let end = self.position;
+        self.advance(); // consume closing quote
+        Token {
+            token_type: TokenType::StringLiteral,
+            value: &self.input[start..end],
+            start,
+        }
+    }
+
+    fn tokenize_operator(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| "+-*/=<>!@".contains(c)) {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Operator,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_template_variable(&mut self) -> Token<'a> {
+        let start = self.position;
+        self.advance(); // consume first {
+        self.advance(); // consume second {
+
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('}') if self.peek() == Some('}') => {
+                    self.advance(); // consume first }
+                    self.advance(); // consume second }
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.position;
+        Token {
+            token_type: TokenType::TemplateVariable,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_template_block(&mut self) -> Token<'a> {
+        let start = self.position;
+        self.advance(); // consume first {
+        self.advance(); // consume %
+
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('%') if self.peek() == Some('}') => {
+                    self.advance(); // consume %
+                    self.advance(); // consume }
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.position;
+        Token {
+            token_type: TokenType::TemplateBlock,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_comment(&mut self) -> Token<'a> {
+        self.advance(); // consume first -
+        self.advance(); // consume second -
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c != '\n') {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Comment,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_multiline_comment(&mut self) -> Token<'a> {
+        self.advance(); // consume /
+        self.advance(); // consume *
+        let start = self.position;
+        while !(self.current_char() == Some('*') && self.peek() == Some('/')) {
+            self.advance();
+        }
+        let end = self.position;
+        self.advance(); // consume *
+        self.advance(); // consume /
+        Token {
+            token_type: TokenType::Comment,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_template_variable(&mut self) -> Token<'a> {
+        let start = self.position;
+        self.advance(); // consume first {
+        self.advance(); // consume second {
+
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('}') if self.peek() == Some('}') => {
+                    self.advance(); // consume first }
+                    self.advance(); // consume second }
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.position;
+        Token {
+            token_type: TokenType::TemplateVariable,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_template_block(&mut self) -> Token<'a> {
+        let start = self.position;
+        self.advance(); // consume first {
+        self.advance(); // consume %
+
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('%') if self.peek() == Some('}') => {
+                    self.advance(); // consume %
+                    self.advance(); // consume }
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.position;
+        Token {
+            token_type: TokenType::TemplateBlock,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_identifier_or_keyword(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            self.advance();
+        }
+        let end = self.position;
+        let ident = self.slice(start, end);
+
+        // Check if it's a keyword (case-insensitive comparison)
+        let ident_upper = ident.to_uppercase();
+        if self.keywords.contains_key(ident_upper.as_str()) {
+            Token {
+                token_type: TokenType::Keyword,
+                value: ident,
+                start,
+                end,
+            }
+        } else {
+            Token {
+                token_type: TokenType::Identifier,
+                value: ident,
+                start,
+                end,
+            }
+        }
+    }
+
+    fn tokenize_number(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c.is_digit(10) || c == '.') {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Number,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_string(&mut self) -> Token<'a> {
+        let quote = self.current_char().unwrap();
+        self.advance(); // consume opening quote
+        let start = self.position;
+        while self.current_char().map_or(false, |c| c != quote) {
+            self.advance();
+        }
+        let end = self.position;
+        self.advance(); // consume closing quote
+        Token {
+            token_type: TokenType::StringLiteral,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+    fn tokenize_operator(&mut self) -> Token<'a> {
+        let start = self.position;
+        while self.current_char().map_or(false, |c| "+-*/=<>!@".contains(c)) {
+            self.advance();
+        }
+        let end = self.position;
+        Token {
+            token_type: TokenType::Operator,
+            value: self.slice(start, end),
+            start,
+            end,
+        }
+    }
+
+
+
+
+
+    fn tokenize_template_variable(&mut self) -> Token {
+        let start = self.position;
+        self.advance(); // consume first {
+        self.advance(); // consume second {
+
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('}') if self.peek() == Some('}') => {
+                    self.advance(); // consume first }
+                    self.advance(); // consume second }
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+
+        let variable: String = self.input[start..self.position].iter().collect();
+        Token {
+            token_type: TokenType::TemplateVariable,
+            value: variable,
+        }
+    }
+
+    fn tokenize_template_block(&mut self) -> Token {
+        let start = self.position;
+        self.advance(); // consume first {
+        self.advance(); // consume %
+
+        while self.position < self.input.len() {
+            match self.current_char() {
+                Some('%') if self.peek() == Some('}') => {
+                    self.advance(); // consume %
+                    self.advance(); // consume }
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+
+        let block: String = self.input[start..self.position].iter().collect();
+        Token {
+            token_type: TokenType::TemplateBlock,
+            value: block,
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn tokenize_to_raw(tokens: &[Token]) -> Vec<String> {
+        tokens.iter().filter_map(|t| match t.token_type {
+            TokenType::EOF => None,
+            TokenType::Keyword => Some(format!("Keyword({:?})", t.value)),
+            TokenType::Identifier => Some(format!("Identifier({:?})", t.value)),
+            TokenType::StringLiteral => Some(format!("StringLiteral({:?})", t.value)),
+            TokenType::Number => Some(format!("Number({:?})", t.value)),
+            TokenType::Operator => Some(format!("Operator({:?})", t.value)),
+            TokenType::Punctuation => Some(format!("Punctuation({:?})", t.value.chars().next().unwrap())),
+            TokenType::Whitespace => Some(format!("Whitespace({:?})", t.value)),
+            TokenType::Comment => Some(format!("Comment({:?})", t.value)),
+            TokenType::TemplateVariable => Some(format!("TemplateVariable({:?})", t.value)),
+            TokenType::TemplateBlock => Some(format!("TemplateBlock({:?})", t.value)),
+        }).collect()
+    }
+
+    fn load_test_file(path: &str) -> TestFile {
+        let content = fs::read_to_string(path).expect("Failed to read test file");
+        serde_yaml::from_str(&content).expect("Failed to parse YAML")
+    }
+
+    fn run_tokenizer_test(test_case: &TestCase) {
+        let mut tokenizer = Tokenizer::new(&test_case.sql);
+        let tokens = tokenizer.tokenize();
+
+        let expected_tokens: Vec<String> = test_case.tokens.iter().map(|t| {
+            if t.token_type == "Punctuation" {
+                format!("{}('{}')", t.token_type, t.value)
+            } else {
+                format!("{}({:?})", t.token_type, t.value)
+            }
+        }).collect();
+
+        let actual_tokens = tokenize_to_raw(&tokens);
+
+        assert_eq!(actual_tokens, expected_tokens, "Test case '{}' failed", test_case.name);
+    }
+
+    #[test]
+    fn test_basic_tokenization() {
+        let test_file = load_test_file("test/fixtures/tokenizer/basic.yml");
+
+        for test_case in test_file.file {
+            println!("Running test: {}", test_case.name);
+            run_tokenizer_test(&test_case);
+        }
+    }
+
+    #[test]
+    fn test_ansi_tokenization() {
+        let test_file = load_test_file("test/fixtures/tokenizer/ansi.yml");
+
+        for test_case in test_file.file {
+            println!("Running ANSI test: {}", test_case.name);
+            run_tokenizer_test(&test_case);
+        }
+    }
+
+    #[test]
+    fn test_snowflake_tokenization() {
+        let test_file = load_test_file("test/fixtures/tokenizer/snowflake.yml");
+
+        for test_case in test_file.file {
+            println!("Running Snowflake test: {}", test_case.name);
+            run_tokenizer_test(&test_case);
+        }
+    }
+
+    #[test]
+    fn test_jinja_tokenization() {
+        let test_file = load_test_file("test/fixtures/tokenizer/jinja.yml");
+
+        for test_case in test_file.file {
+            println!("Running Jinja test: {}", test_case.name);
+            run_tokenizer_test(&test_case);
+        }
+    }
+}

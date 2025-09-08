@@ -1,0 +1,30 @@
+file:
+  - name: keyword_case_upper
+    input: "select * from users where id = 1"
+    settings:
+      keyword_case: "upper"
+    expected: "SELECT * FROM users WHERE id = 1"
+
+  - name: keyword_case_lower
+    input: "SELECT * FROM users"
+    settings:
+      keyword_case: "lower"
+    expected: "select * from users"
+
+  - name: keyword_case_preserve
+    input: "Select * From users"
+    settings:
+      keyword_case: "preserve"
+    expected: "Select * From users"
+
+  - name: indent_spaces_2
+    input: "SELECT id, name FROM users WHERE active = TRUE"
+    settings:
+      indent_style: "spaces"
+      indent_size: 2
+    expected: |
+      SELECT
+        id,
+        name
+      FROM users
+      WHERE active = TRUE
