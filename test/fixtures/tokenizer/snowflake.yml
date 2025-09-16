@@ -8,8 +8,7 @@ file:
         value: "INTO"
       - type: Identifier
         value: "mytable"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Operator
         value: "@"
       - type: Identifier
@@ -22,44 +21,38 @@ file:
         value: "/"
       - type: Identifier
         value: "file"
-      - type: Punctuation
-        value: "."
+      - type: Dot
       - type: Identifier
         value: "csv"
-      - type: Punctuation
-        value: "."
+      - type: Dot
       - type: Identifier
         value: "gz"
 
   - name: snowflake_semi_structured
     sql: "SELECT data:key.subkey::string FROM table1"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Identifier
         value: "data"
       - type: Punctuation
         value: ":"
       - type: Identifier
         value: "key"
-      - type: Punctuation
-        value: "."
+      - type: Dot
       - type: Identifier
         value: "subkey"
       - type: Operator
         value: "::"
       - type: Identifier
         value: "string"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "table1"
 
   - name: snowflake_variant_access
     sql: "SELECT $1:name, $2:value FROM @mystage"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Operator
         value: "$"
       - type: Number
@@ -68,8 +61,7 @@ file:
         value: ":"
       - type: Identifier
         value: "name"
-      - type: Punctuation
-        value: ","
+      - type: Comma
       - type: Operator
         value: "$"
       - type: Number
@@ -78,8 +70,7 @@ file:
         value: ":"
       - type: Identifier
         value: "value"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Operator
         value: "@"
       - type: Identifier

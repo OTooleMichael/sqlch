@@ -2,32 +2,26 @@ file:
   - name: basic_select
     sql: "SELECT * FROM users"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Operator
         value: "*"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "users"
 
   - name: select_with_where
     sql: "SELECT id, name FROM users WHERE active = 1"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Identifier
         value: "id"
-      - type: Punctuation
-        value: ","
+      - type: Comma
       - type: Identifier
         value: "name"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "users"
-      - type: Keyword
-        value: "WHERE"
+      - type: Where
       - type: Identifier
         value: "active"
       - type: Operator
@@ -38,44 +32,37 @@ file:
   - name: comments
     sql: "SELECT * -- comment\nFROM users"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Operator
         value: "*"
       - type: Comment
         value: " comment"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "users"
 
   - name: multiline_comments
     sql: "SELECT * /* comment */ FROM users"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Operator
         value: "*"
       - type: Comment
         value: " comment "
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "users"
 
   - name: strings
     sql: "SELECT * FROM users WHERE name = 'John'"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Operator
         value: "*"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "users"
-      - type: Keyword
-        value: "WHERE"
+      - type: Where
       - type: Identifier
         value: "name"
       - type: Operator
@@ -86,15 +73,12 @@ file:
   - name: numbers
     sql: "SELECT 123, 45.67 FROM users"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Number
         value: "123"
-      - type: Punctuation
-        value: ","
+      - type: Comma
       - type: Number
         value: "45.67"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "users"

@@ -2,26 +2,21 @@ file:
   - name: complex_select
     sql: "SELECT DISTINCT id, name, email FROM users WHERE active = true AND created_at > '2023-01-01'"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Keyword
         value: "DISTINCT"
       - type: Identifier
         value: "id"
-      - type: Punctuation
-        value: ","
+      - type: Comma
       - type: Identifier
         value: "name"
-      - type: Punctuation
-        value: ","
+      - type: Comma
       - type: Identifier
         value: "email"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "users"
-      - type: Keyword
-        value: "WHERE"
+      - type: Where
       - type: Identifier
         value: "active"
       - type: Operator
@@ -46,28 +41,22 @@ file:
         value: "INTO"
       - type: Identifier
         value: "users"
-      - type: Punctuation
-        value: "("
+      - type: LeftParen
       - type: Identifier
         value: "name"
-      - type: Punctuation
-        value: ","
+      - type: Comma
       - type: Identifier
         value: "email"
-      - type: Punctuation
-        value: ")"
+      - type: RightParen
       - type: Keyword
         value: "VALUES"
-      - type: Punctuation
-        value: "("
+      - type: LeftParen
       - type: StringLiteral
         value: "John"
-      - type: Punctuation
-        value: ","
+      - type: Comma
       - type: StringLiteral
         value: "john@example.com"
-      - type: Punctuation
-        value: ")"
+      - type: RightParen
 
   - name: update_statement
     sql: "UPDATE users SET name = 'Jane', active = false WHERE id = 123"
@@ -84,16 +73,14 @@ file:
         value: "="
       - type: StringLiteral
         value: "Jane"
-      - type: Punctuation
-        value: ","
+      - type: Comma
       - type: Identifier
         value: "active"
       - type: Operator
         value: "="
       - type: Keyword
         value: "false"
-      - type: Keyword
-        value: "WHERE"
+      - type: Where
       - type: Identifier
         value: "id"
       - type: Operator

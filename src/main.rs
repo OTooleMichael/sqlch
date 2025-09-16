@@ -1,16 +1,10 @@
-use sql_formatter::tokenizer::{Tokenizer, TokenType};
-use sql_formatter::formatter::{Formatter, KeywordCaseRule, IndentRule};
+use sql_formatter::tokenizer::{TokenType, Tokenizer};
 use std::io::{self, Write};
 
 fn main() {
-    println!("SQL Formatter Demo");
+    println!("SQL Tokenizer Demo");
     println!("==================");
-    println!("Enter SQL to format (or 'quit' to exit):");
-    println!("Commands:");
-    println!("  /upper  - Format with uppercase keywords");
-    println!("  /lower  - Format with lowercase keywords");
-    println!("  /indent - Format with indentation");
-    println!("  /all    - Format with all rules");
+    println!("Enter SQL to tokenize (or 'quit' to exit):");
     println!();
 
     loop {
@@ -29,50 +23,29 @@ fn main() {
             continue;
         }
 
-        // Check for commands
-        let (sql, formatter) = if input.starts_with("/upper ") {
-            (&input[7..], Formatter::new().add_rule(Box::new(KeywordCaseRule::upper())))
-        } else if input.starts_with("/lower ") {
-            (&input[7..], Formatter::new().add_rule(Box::new(KeywordCaseRule::lower())))
-        } else if input.starts_with("/indent ") {
-            (&input[8..], Formatter::new().add_rule(Box::new(IndentRule::spaces(2))))
-        } else if input.starts_with("/all ") {
-            (&input[5..], Formatter::new()
-                .add_rule(Box::new(KeywordCaseRule::upper()))
-                .add_rule(Box::new(IndentRule::spaces(2))))
-        } else {
-            // Default: just tokenize
-            let mut tokenizer = Tokenizer::new(input);
-            let result = match tokenizer.tokenize() {
-                Ok(result) => result,
-                Err(err) => {
-                    println!("Tokenization error: {}", err);
-                    continue;
-                }
-            };
-            let tokens = &result.tokens;
-
-            println!("Tokens:");
-            for (i, token) in tokens.iter().enumerate() {
-                if token.token_type == TokenType::EOF {
-                    continue;
-                }
-                println!("  {:2}: {:15} '{}'", i, format!("{:?}", token.token_type), token.value);
-            }
-            println!();
-            continue;
-        };
-
-        // Format the SQL
-        let formatted = match formatter.format_sql(sql) {
-            Ok(formatted) => formatted,
+        // Tokenize the input
+        let mut tokenizer = Tokenizer::new(input);
+        let result = match tokenizer.tokenize() {
+            Ok(result) => result,
             Err(err) => {
-                println!("Formatting error: {}", err);
+                println!("Tokenization error: {err}");
                 continue;
             }
         };
-        println!("Formatted SQL:");
-        println!("{}", formatted);
+
+        println!("Hash: {}", result.hash);
+        println!("Tokens:");
+        for (i, token) in result.tokens.iter().enumerate() {
+            if token.token_type == TokenType::EOF {
+                continue;
+            }
+            println!(
+                "  {:2}: {:15} '{}'",
+                i,
+                format!("{:?}", token.token_type),
+                token.value()
+            );
+        }
         println!();
     }
 }

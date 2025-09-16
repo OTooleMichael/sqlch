@@ -1,0 +1,17 @@
+file:
+  - name: basic_case_statement
+    input: |
+      SELECT name, CASE WHEN salary > 100000 THEN 'High' ELSE 'Low' END as tier FROM employees
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        name,
+        CASE
+          WHEN salary > 100000 THEN 'High'
+          ELSE 'Low'
+        END AS tier
+      FROM employees

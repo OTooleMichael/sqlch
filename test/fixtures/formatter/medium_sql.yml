@@ -1,0 +1,187 @@
+file:
+  # Short vs Long GROUP BY clauses
+  - name: short_group_by
+    input: |
+      SELECT department, COUNT(*) FROM employees GROUP BY department
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 40
+    expected: |
+      SELECT
+        department,
+        COUNT(*)
+      FROM employees
+      GROUP BY department
+
+  - name: long_group_by_multiple_columns
+    input: |
+      SELECT department, location, hire_year, COUNT(*), AVG(salary) FROM employees GROUP BY department, location, hire_year, manager_id, status
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 60
+    expected: |
+      SELECT
+        department,
+        location,
+        hire_year,
+        COUNT(*),
+        AVG(salary)
+      FROM employees
+      GROUP BY department,
+        location,
+        hire_year,
+        manager_id,
+        status
+
+  - name: long_join_condition_with_ands
+    input: |
+      SELECT * FROM users u INNER JOIN profiles p ON u.id = p.user_id AND u.active = TRUE AND p.verified = TRUE AND u.created_at > p.created_at
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        *
+      FROM users u
+      INNER JOIN profiles p ON u.id = p.user_id
+        AND u.active = TRUE
+        AND p.verified = TRUE
+        AND u.created_at > p.created_at
+
+  # Short vs Long HAVING clauses
+  - name: short_having_clause
+    input: |
+      SELECT department, COUNT(*) FROM employees GROUP BY department HAVING COUNT(*) > 5
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 25
+    expected: |
+      SELECT
+        department,
+        COUNT(*)
+      FROM employees
+      GROUP BY department
+      HAVING COUNT(*) > 5
+
+  - name: long_having_clause_with_ands
+    input: |
+      SELECT department, COUNT(*), AVG(salary) FROM employees GROUP BY department HAVING COUNT(*) > 5 AND AVG(salary) > 50000 AND MIN(hire_date) < '2020-01-01'
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 40
+    expected: |
+      SELECT
+        department,
+        COUNT(*),
+        AVG(salary)
+      FROM employees
+      GROUP BY department
+      HAVING COUNT(*) > 5
+        AND AVG(salary) > 50000
+        AND MIN(hire_date) < '2020-01-01'
+
+  - name: complex_where_with_parentheses
+    input: |
+      SELECT * FROM employees WHERE (department = 'Engineering' AND salary > 100000) OR (department = 'Sales' AND quota_achieved = TRUE)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 50
+    expected: |
+      SELECT
+        *
+      FROM employees
+      WHERE (
+          department = 'Engineering'
+          AND salary > 100000
+        )
+        OR (
+          department = 'Sales'
+          AND quota_achieved = TRUE
+        )
+
+  - name: multiple_joins
+    input: |
+      SELECT u.name, p.bio, d.name as dept_name FROM users u INNER JOIN profiles p ON u.id = p.user_id LEFT JOIN departments d ON u.dept_id = d.id WHERE u.active = TRUE
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 30
+    expected: |
+      SELECT
+        u.name,
+        p.bio,
+        d.name AS dept_name
+      FROM users u
+      INNER JOIN profiles p ON u.id = p.user_id
+      LEFT JOIN departments d ON u.dept_id = d.id
+      WHERE u.active = TRUE
+
+  - name: simple_from_subquery
+    input: |
+      SELECT name, dept_name FROM (SELECT u.name, d.name as dept_name FROM users u JOIN departments d ON u.dept_id = d.id) as user_dept
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        name,
+        dept_name
+      FROM (
+        SELECT
+          u.name,
+          d.name AS dept_name
+        FROM users u
+        JOIN departments d ON u.dept_id = d.id
+      ) AS user_dept
+
+  # CASE statements
+  - name: simple_case_statement
+    input: |
+      SELECT name, CASE WHEN salary > 100000 THEN 'High' WHEN salary > 50000 THEN 'Medium' ELSE 'Low' END as salary_tier FROM employees
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        name,
+        CASE
+          WHEN salary > 100000 THEN 'High'
+          WHEN salary > 50000 THEN 'Medium'
+          ELSE 'Low'
+        END AS salary_tier
+      FROM employees
+
+  - name: case_with_complex_conditions
+    input: |
+      SELECT name, CASE WHEN department = 'Engineering' AND salary > 120000 THEN 'Senior Engineer' WHEN department = 'Sales' THEN 'Sales Rep' ELSE 'Other' END as role FROM employees
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        name,
+        CASE
+          WHEN department = 'Engineering' AND salary > 120000 THEN 'Senior Engineer'
+          WHEN department = 'Sales' THEN 'Sales Rep'
+          ELSE 'Other'
+        END as role
+      FROM employees

@@ -1,0 +1,1 @@
+SELECT name, CASE WHEN salary > 100000 THEN 'High' ELSE 'Low' END FROM employees

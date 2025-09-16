@@ -2,16 +2,13 @@ file:
   - name: simple_variable_substitution
     sql: "SELECT * FROM {{ table_name }} WHERE id = {{ user_id }}"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Operator
         value: "*"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: TemplateVariable
         value: "{{ table_name }}"
-      - type: Keyword
-        value: "WHERE"
+      - type: Where
       - type: Identifier
         value: "id"
       - type: Operator
@@ -22,62 +19,54 @@ file:
   - name: jinja_if_block
     sql: "SELECT * FROM users {% if active %}WHERE active = true{% endif %}"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Operator
         value: "*"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "users"
-      - type: TemplateBlock
+      - type: JinjaIf
         value: "{% if active %}"
-      - type: Keyword
-        value: "WHERE"
+      - type: Where
       - type: Identifier
         value: "active"
       - type: Operator
         value: "="
       - type: Keyword
         value: "true"
-      - type: TemplateBlock
+      - type: JinjaEndif
         value: "{% endif %}"
 
   - name: jinja_for_loop
     sql: "SELECT {% for col in columns %}{{ col }}{% if not loop.last %}, {% endif %}{% endfor %} FROM table1"
     tokens:
-      - type: Keyword
-        value: "SELECT"
-      - type: TemplateBlock
+      - type: Select
+      - type: JinjaFor
         value: "{% for col in columns %}"
       - type: TemplateVariable
         value: "{{ col }}"
-      - type: TemplateBlock
+      - type: JinjaIf
         value: "{% if not loop.last %}"
-      - type: Punctuation
+      - type: Comma
         value: ","
-      - type: TemplateBlock
+      - type: JinjaEndif
         value: "{% endif %}"
-      - type: TemplateBlock
+      - type: JinjaEndfor
         value: "{% endfor %}"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: Identifier
         value: "table1"
 
   - name: dbt_ref_function
     sql: "SELECT * FROM {{ ref('users') }} WHERE status = {{ var('active_status') }}"
     tokens:
-      - type: Keyword
-        value: "SELECT"
+      - type: Select
       - type: Operator
         value: "*"
-      - type: Keyword
-        value: "FROM"
+      - type: From
       - type: TemplateVariable
         value: "{{ ref('users') }}"
-      - type: Keyword
-        value: "WHERE"
+      - type: Where
       - type: Identifier
         value: "status"
       - type: Operator

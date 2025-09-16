@@ -1,0 +1,182 @@
+file:
+  # Test universal grouping with nonsense/invalid SQL - force break with low width
+  - name: nonsense_mixed_group_short_line
+    input: |
+      ( 8 * TRUE AND lemon OR word , thing )
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 20
+    expected: |
+      (
+        8 * TRUE
+        AND lemon
+        OR word,
+        thing
+      )
+
+  # Same content but with wide line - should stay compact
+  - name: nonsense_mixed_group_wide_line
+    input: |
+      ( 8 * TRUE AND lemon OR word , thing )
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      (8 * TRUE AND lemon OR word, thing)
+
+  # Function calls with multiple arguments - force break
+  - name: function_with_multiple_args_force_break
+    input: |
+      COALESCE(col1, col2, col3, col4)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 15
+    expected: |
+      COALESCE(
+        col1,
+        col2,
+        col3,
+        col4
+      )
+
+  # Same function but wider - should stay compact
+  - name: function_with_multiple_args_stay_compact
+    input: |
+      COALESCE(col1, col2, col3)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      COALESCE(col1, col2, col3)
+
+  # Simple function call that should stay inline
+  - name: short_function_call
+    input: |
+      COUNT(*)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      COUNT(*)
+
+  # Complex boolean conditions - force break with very narrow width
+  - name: complex_boolean_group_narrow
+    input: |
+      WHERE (active = TRUE AND verified = TRUE)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 25
+    expected: |
+      WHERE (
+          active = TRUE
+          AND verified = TRUE
+        )
+
+  # Same condition but wider - should stay compact
+  - name: complex_boolean_group_wide
+    input: |
+      WHERE (active = TRUE AND verified = TRUE)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      WHERE (active = TRUE AND verified = TRUE)
+
+  # Mathematical expressions - force break
+  - name: math_expression_force_break
+    input: |
+      SELECT (salary * rate + bonus - tax) as net
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 20
+    expected: |
+      SELECT
+        (
+          salary * rate
+          + bonus
+          - tax
+        ) as net
+
+  # Same math expression but wider - should stay compact
+  - name: math_expression_stay_compact
+    input: |
+      SELECT (salary + bonus) as total
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        (salary + bonus) as total
+
+  # Nested groups
+  - name: nested_groups
+    input: |
+      SELECT * FROM users WHERE (active = TRUE AND (premium = TRUE OR (trial_active = TRUE AND trial_days > 0)))
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 40
+    expected: |
+      SELECT
+        *
+      FROM users
+      WHERE (
+          active = TRUE
+          AND (
+            premium = TRUE
+            OR (
+              trial_active = TRUE
+              AND trial_days > 0
+            )
+          )
+        )
+
+  # Mixed operators and commas in same group
+  - name: mixed_group_content
+    input: |
+      SELECT func(col1, col2 AND col3, col4 OR col5) FROM table
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 30
+    expected: |
+      SELECT
+        func(
+          col1,
+          col2 AND col3,
+          col4 OR col5
+        )
+      FROM table
+
+  # Just parentheses with single value
+  - name: simple_parentheses
+    input: |
+      SELECT (42) as answer
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        (42) as answer

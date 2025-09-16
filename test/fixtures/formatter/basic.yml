@@ -1,30 +1,203 @@
 file:
-  - name: keyword_case_upper
-    input: "select * from users where id = 1"
-    settings:
-      keyword_case: "upper"
-    expected: "SELECT * FROM users WHERE id = 1"
-
-  - name: keyword_case_lower
-    input: "SELECT * FROM users"
-    settings:
-      keyword_case: "lower"
-    expected: "select * from users"
-
-  - name: keyword_case_preserve
-    input: "Select * From users"
-    settings:
-      keyword_case: "preserve"
-    expected: "Select * From users"
-
   - name: indent_spaces_2
-    input: "SELECT id, name FROM users WHERE active = TRUE"
+    input: |
+      SELECT id, name FROM users WHERE active = TRUE
     settings:
-      indent_style: "spaces"
-      indent_size: 2
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
     expected: |
       SELECT
         id,
         name
       FROM users
       WHERE active = TRUE
+  - name: break_list_on_80_plus
+    input: |
+      SELECT id, name FROM users WHERE active = TRUE
+      AND lemon IN (1,4,5,6,18,1123423,132423421,1234234123521,1234234134214,12342341243,12343254234899789000000098098898989)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        id,
+        name
+      FROM users
+      WHERE active = TRUE
+        AND lemon IN (
+          1,
+          4,
+          5,
+          6,
+          18,
+          1123423,
+          132423421,
+          1234234123521,
+          1234234134214,
+          12342341243,
+          12343254234899789000000098098898989
+        )
+  - name: break_list_on_80_plus
+    input: |
+      SELECT id, name FROM users
+      WHERE active = TRUE
+      AND lemon IN (1,4,5,6,18)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 45
+    expected: |
+      SELECT
+        id,
+        name
+      FROM users
+      WHERE active = TRUE
+        AND lemon IN (1, 4, 5, 6, 18)
+  - name: simple_join
+    input: |
+      SELECT u.id, u.name, p.score FROM users AS u
+      INNER JOIN profiles AS p ON p.user_id = u.id
+      WHERE u.active = TRUE
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        u.id,
+        u.name,
+        p.score
+      FROM users AS u
+      INNER JOIN profiles AS p ON p.user_id = u.id
+      WHERE u.active = TRUE
+  - name: simple_join_4
+    input: |
+      SELECT u.id, u.name, p.score FROM users AS u
+      INNER JOIN profiles AS p ON p.user_id = u.id
+      WHERE u.active = TRUE
+    settings:
+      indent:
+        style: "spaces"
+        size: 4
+      line_width: 80
+    expected: |
+      SELECT
+          u.id,
+          u.name,
+          p.score
+      FROM users AS u
+      INNER JOIN profiles AS p ON p.user_id = u.id
+      WHERE u.active = TRUE
+  - name: select_distinct
+    input: |
+      SELECT DISTINCT id, name, email
+      FROM users WHERE active = TRUE AND created_at > '2023-01-01'
+    settings:
+      indent:
+        style: "spaces"
+        size: 4
+      line_width: 30
+    expected: |
+      SELECT DISTINCT
+          id,
+          name,
+          email
+      FROM users
+      WHERE active = TRUE
+          AND created_at > '2023-01-01'
+  - name: having_clause
+    input: |
+      SELECT department, COUNT(*) FROM employees 
+      GROUP        BY department 
+      HAVING COUNT(*) > 5 AND AVG(salary) > 50000
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 30
+    expected: |
+      SELECT
+        department,
+        COUNT(*)
+      FROM employees
+      GROUP BY department
+      HAVING COUNT(*) > 5
+        AND AVG(salary) > 50000
+  - name: qualify_clause
+    input: |
+      SELECT name, salary,
+      ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn
+      FROM employees
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) <= 3
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 40
+    expected: |
+      SELECT
+        name,
+        salary,
+        ROW_NUMBER() OVER (
+          PARTITION BY department
+          ORDER BY salary DESC
+        ) AS rn
+      FROM employees
+      QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY department
+          ORDER BY salary DESC
+        ) <= 3
+  - name: group_by_multiple_columns
+    input: |
+      SELECT department, location, COUNT(*) AS total
+      FROM employees
+      GROUP BY department, location, hire_year
+      ORDER BY total DESC
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 40
+    expected: |
+      SELECT
+        department,
+        location,
+        COUNT(*) AS total
+      FROM employees
+      GROUP BY department,
+        location,
+        hire_year
+      ORDER BY total DESC
+  - name: complex_join_having_qualify
+    input: |
+      SELECT d.name, AVG(e.salary) AS avg_sal
+      FROM departments d
+      LEFT JOIN employees e ON d.id = e.dept_id
+      WHERE e.active = TRUE
+      GROUP BY d.name
+      HAVING AVG(e.salary) > 60000 AND COUNT(*) > 2
+      QUALIFY RANK() OVER (ORDER BY AVG(e.salary) DESC) <= 5
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 45
+    expected: |
+      SELECT
+        d.name,
+        AVG(e.salary) AS avg_sal
+      FROM departments d
+      LEFT JOIN employees e ON d.id = e.dept_id
+      WHERE e.active = TRUE
+      GROUP BY d.name
+      HAVING AVG(e.salary) > 60000
+        AND COUNT(*) > 2
+      QUALIFY RANK() OVER (
+          ORDER BY AVG(e.salary) DESC
+        ) <= 5

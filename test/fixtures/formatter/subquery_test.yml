@@ -1,0 +1,18 @@
+file:
+  - name: basic_from_subquery
+    input: |
+      SELECT name FROM (SELECT name FROM employees WHERE active = TRUE) as active_employees
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        name
+      FROM (
+        SELECT
+          name
+        FROM employees
+        WHERE active = TRUE
+      ) as active_employees

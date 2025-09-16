@@ -1,0 +1,1 @@
+SELECT * FROM users INNER JOIN profiles ON users.id = profiles.user_id

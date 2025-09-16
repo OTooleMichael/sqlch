@@ -1,0 +1,170 @@
+file:
+  - name: inner_join
+    sql: "SELECT * FROM users INNER JOIN profiles ON users.id = profiles.user_id"
+    tokens:
+      - type: Select
+      - type: Operator
+        value: "*"
+      - type: From
+      - type: Identifier
+        value: "users"
+      - type: InnerJoin
+      - type: Identifier
+        value: "profiles"
+      - type: Keyword
+        value: "ON"
+      - type: Identifier
+        value: "users"
+      - type: Dot
+      - type: Identifier
+        value: "id"
+      - type: Operator
+        value: "="
+      - type: Identifier
+        value: "profiles"
+      - type: Dot
+      - type: Identifier
+        value: "user_id"
+
+  - name: left_join
+    sql: "SELECT * FROM users LEFT JOIN profiles ON users.id = profiles.user_id"
+    tokens:
+      - type: Select
+      - type: Operator
+        value: "*"
+      - type: From
+      - type: Identifier
+        value: "users"
+      - type: LeftJoin
+      - type: Identifier
+        value: "profiles"
+      - type: Keyword
+        value: "ON"
+      - type: Identifier
+        value: "users"
+      - type: Dot
+      - type: Identifier
+        value: "id"
+      - type: Operator
+        value: "="
+      - type: Identifier
+        value: "profiles"
+      - type: Dot
+      - type: Identifier
+        value: "user_id"
+
+  - name: group_by_having
+    sql: "SELECT department, COUNT(*) FROM employees GROUP BY department HAVING COUNT(*) > 5"
+    tokens:
+      - type: Select
+      - type: Identifier
+        value: "department"
+      - type: Comma
+        value: ","
+      - type: Identifier
+        value: "COUNT"
+      - type: LeftParen
+        value: "("
+      - type: Operator
+        value: "*"
+      - type: RightParen
+        value: ")"
+      - type: From
+      - type: Identifier
+        value: "employees"
+      - type: GroupBy
+        value: "GROUP BY"
+      - type: Identifier
+        value: "department"
+      - type: Having
+        value: "HAVING"
+      - type: Identifier
+        value: "COUNT"
+      - type: LeftParen
+        value: "("
+      - type: Operator
+        value: "*"
+      - type: RightParen
+        value: ")"
+      - type: Operator
+        value: ">"
+      - type: Number
+        value: "5"
+
+  - name: order_by_where
+    sql: "SELECT * FROM users WHERE active = true ORDER BY created_at"
+    tokens:
+      - type: Select
+      - type: Operator
+        value: "*"
+      - type: From
+      - type: Identifier
+        value: "users"
+      - type: Where
+        value: "WHERE"
+      - type: Identifier
+        value: "active"
+      - type: Operator
+        value: "="
+      - type: Keyword
+        value: "true"
+      - type: OrderBy
+        value: "ORDER BY"
+      - type: Identifier
+        value: "created_at"
+
+  - name: full_outer_join
+    sql: "SELECT * FROM users FULL JOIN profiles ON users.id = profiles.user_id"
+    tokens:
+      - type: Select
+      - type: Operator
+        value: "*"
+      - type: From
+      - type: Identifier
+        value: "users"
+      - type: FullJoin
+        value: "FULL JOIN"
+      - type: Identifier
+        value: "profiles"
+      - type: Keyword
+        value: "ON"
+      - type: Identifier
+        value: "users"
+      - type: Dot
+      - type: Identifier
+        value: "id"
+      - type: Operator
+        value: "="
+      - type: Identifier
+        value: "profiles"
+      - type: Dot
+      - type: Identifier
+        value: "user_id"
+
+  - name: right_join
+    sql: "SELECT * FROM users RIGHT JOIN profiles ON users.id = profiles.user_id"
+    tokens:
+      - type: Select
+      - type: Operator
+        value: "*"
+      - type: From
+      - type: Identifier
+        value: "users"
+      - type: RightJoin
+        value: "RIGHT JOIN"
+      - type: Identifier
+        value: "profiles"
+      - type: Keyword
+        value: "ON"
+      - type: Identifier
+        value: "users"
+      - type: Dot
+      - type: Identifier
+        value: "id"
+      - type: Operator
+        value: "="
+      - type: Identifier
+        value: "profiles"
+      - type: Dot
+      - type: Identifier
+        value: "user_id"

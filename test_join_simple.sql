@@ -1,0 +1,1 @@
+SELECT * FROM users LEFT JOIN profiles ON users.id = profiles.user_id
