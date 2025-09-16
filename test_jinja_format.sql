@@ -1,0 +1,1 @@
+SELECT col1, col2 FROM users {% if active %}WHERE active = true{% endif %} ORDER BY col1

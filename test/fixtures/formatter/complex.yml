@@ -47,7 +47,7 @@ file:
           {% endif %}
       FROM users u
       {% if include_profile %}
-          JOIN profiles p ON u.id = p.user_id 
+          JOIN profiles p ON u.id = p.user_id
       {% endif %}
       WHERE u.active = TRUE
 
@@ -61,7 +61,7 @@ file:
     settings:
       indent:
         style: "spaces"
-        size: 4  
+        size: 4
       line_width: 80
     expected: |
       SELECT
@@ -72,3 +72,31 @@ file:
               email
           {% endif %}
       FROM users
+  - name: simple_conditional_field_2
+    input: |
+      SELECT id, name
+      {% if show_email %}
+      , email
+      {% else %}
+      , name
+      {% endif %}
+      FROM users -- hello
+      LEFT JOIN {{ ref('my_table') }} USING(id)
+    settings:
+      indent:
+        style: "spaces"
+        size: 4
+      line_width: 80
+    expected: |
+      SELECT
+          id,
+          name
+          {% if show_email %}
+              ,
+              email
+          {% else %}
+              ,
+              name
+          {% endif %}
+      FROM users
+      LEFT JOIN {{ ref('my_table') }} USING(id)

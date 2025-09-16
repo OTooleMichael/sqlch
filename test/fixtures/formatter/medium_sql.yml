@@ -15,6 +15,36 @@ file:
       FROM employees
       GROUP BY department
 
+  - name: with_example
+    input: |
+      WIth prep AS (SELECT 1 AS n),
+      lemon AS (SELECT paino * SUM (hope) AS p FROM table)
+      SELECT department, COUNT(*) FROM employees GROUP BY department
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 40
+    expected: |
+      WITH prep AS (
+        SELECT
+          1 AS n
+      ),
+
+      lemon AS (
+        SELECT
+          paino
+          * SUM(hope) AS p
+        FROM table
+      )
+
+      SELECT
+        department,
+        COUNT(*)
+      FROM employees
+      GROUP BY department
+
+
   - name: long_group_by_multiple_columns
     input: |
       SELECT department, location, hire_year, COUNT(*), AVG(salary) FROM employees GROUP BY department, location, hire_year, manager_id, status

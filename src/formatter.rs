@@ -208,11 +208,8 @@ impl FormatAstBuilder {
                     break;
                 }
                 SqlContext::JinjaBlock => {
+                    // Don't terminate JinjaBlock contexts - they should complete naturally
                     break;
-                    self.pop_context();
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                    self.end_group();
                 }
                 SqlContext::Root => break,
                 _ => {
@@ -222,7 +219,10 @@ impl FormatAstBuilder {
         }
     }
 
-    fn start_group(&mut self) {
+    fn start_group(&mut self, ctx: Option<SqlContext>) {
+        if let Some(ctx_) = ctx {
+            self.push_context(ctx_)
+        }
         self.group_stack.push(Vec::new());
     }
 
@@ -244,7 +244,9 @@ impl FormatAstBuilder {
     }
 
     fn advance(&mut self) -> Option<Token> {
-        self.tokens.pop_front()
+        let next_t = self.tokens.pop_front();
+        println!("{:?}", next_t);
+        next_t
     }
 
     fn build(mut self) -> FormatAst {
@@ -317,35 +319,13 @@ impl FormatAstBuilder {
             TokenType::LeftParen => self.handle_left_paren(token),
             TokenType::RightParen => self.handle_right_paren(token),
             TokenType::JinjaIf | TokenType::JinjaFor => {
-                self.start_group();
-                self.push_context(SqlContext::JinjaBlock);
-                self.push_to_current_target(FormatElement::HardBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Indent);
-                self.push_to_current_target(FormatElement::HardBreak);
+                self.handle_jinja_start(token);
             }
             TokenType::JinjaElif | TokenType::JinjaElse => {
-                self.push_to_current_target(FormatElement::Dedent);
-                self.push_to_current_target(FormatElement::HardBreak);
-                self.end_group();
-                self.start_group();
-                self.push_to_current_target(FormatElement::HardBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Indent);
-                self.push_to_current_target(FormatElement::HardBreak);
+                self.handle_jinja_transition(token);
             }
             TokenType::JinjaEndif | TokenType::JinjaEndfor => {
-                while let Some(ctx) = self.pop_context() {
-                    match ctx {
-                        SqlContext::Root | SqlContext::JinjaBlock => break,
-                        _ => {}
-                    }
-                }
-                self.push_to_current_target(FormatElement::Dedent);
-                self.push_to_current_target(FormatElement::HardBreak);
-                self.end_group();
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::HardBreak);
+                self.handle_jinja_end(token);
             }
             TokenType::TemplateVariable | TokenType::TemplateBlock => {
                 self.handle_jinja_template(token)
@@ -381,6 +361,7 @@ impl FormatAstBuilder {
             }
         }
     }
+
     fn peek_type(&self) -> Option<TokenType> {
         if let Some(next_token) = self.peek() {
             return Some(next_token.token_type.clone());
@@ -389,6 +370,10 @@ impl FormatAstBuilder {
     }
 
     fn handle_select(&mut self, token: Token) {
+        if self.current_context() == &SqlContext::WithClause {
+            self.pop_context();
+            self.push_to_current_target(FormatElement::LineGap);
+        }
         self.push_to_current_target(FormatElement::Token(token));
         if let Some(next_token) = self.peek() {
             if matches!(next_token.token_type, TokenType::Keyword)
@@ -399,18 +384,16 @@ impl FormatAstBuilder {
                 self.push_to_current_target(FormatElement::Token(distinct));
             }
         }
-        self.start_group();
+        self.start_group(Some(SqlContext::SelectBlock));
         self.push_to_current_target(FormatElement::ShortBreak);
         self.push_to_current_target(FormatElement::Indent);
-        self.push_context(SqlContext::SelectBlock);
         self.push_context(SqlContext::SelectBlockClause(SqlClause::SelectFields));
     }
 
     fn handle_from(&mut self, token: Token) {
         let ctx = SqlContext::SelectBlockClause(SqlClause::From);
         self.terminate_contexts_for(ctx.clone());
-        self.push_context(ctx);
-        self.start_group();
+        self.start_group(Some(ctx));
         self.push_to_current_target(FormatElement::Token(token));
         self.push_to_current_target(FormatElement::Space);
     }
@@ -418,9 +401,8 @@ impl FormatAstBuilder {
     fn handle_join(&mut self, token: Token) {
         let ctx = SqlContext::SelectBlockClause(SqlClause::Join);
         self.terminate_contexts_for(ctx.clone());
-        self.push_context(ctx);
         self.push_to_current_target(FormatElement::HardBreak);
-        self.start_group();
+        self.start_group(Some(ctx));
         self.push_to_current_target(FormatElement::Token(token));
         self.push_to_current_target(FormatElement::Space);
         self.push_to_current_target(FormatElement::Indent);
@@ -438,9 +420,8 @@ impl FormatAstBuilder {
         };
         let ctx = SqlContext::SelectBlockClause(cls);
         self.terminate_contexts_for(ctx.clone());
-        self.push_context(ctx);
         self.push_to_current_target(FormatElement::HardBreak);
-        self.start_group();
+        self.start_group(Some(ctx));
         self.push_to_current_target(FormatElement::Token(token));
         self.push_to_current_target(FormatElement::Space);
         self.push_to_current_target(FormatElement::Indent);
@@ -453,8 +434,7 @@ impl FormatAstBuilder {
     }
 
     fn handle_case(&mut self, token: Token) {
-        self.start_group(); // CASE root group
-        self.push_context(SqlContext::CaseStatement(CaseClause::Root));
+        self.start_group(Some(SqlContext::CaseStatement(CaseClause::Root)));
         self.push_to_current_target(FormatElement::Token(token));
         self.push_to_current_target(FormatElement::SoftBreak);
         self.push_to_current_target(FormatElement::Indent);
@@ -463,11 +443,9 @@ impl FormatAstBuilder {
     fn handle_when(&mut self, token: Token) {
         self.move_to_case_root();
         self.push_to_current_target(FormatElement::SoftBreak);
-        self.push_context(SqlContext::CaseStatement(CaseClause::WhenThen));
-        self.start_group();
-        self.push_context(SqlContext::CaseStatement(CaseClause::When));
+        self.start_group(Some(SqlContext::CaseStatement(CaseClause::WhenThen)));
         self.push_to_current_target(FormatElement::Token(token));
-        self.start_group();
+        self.start_group(Some(SqlContext::CaseStatement(CaseClause::When)));
         self.push_to_current_target(FormatElement::Indent);
         self.push_to_current_target(FormatElement::Space);
     }
@@ -479,9 +457,8 @@ impl FormatAstBuilder {
         self.pop_context();
         self.push_to_current_target(FormatElement::Indent);
         self.push_to_current_target(FormatElement::SoftBreak);
-        self.push_context(SqlContext::CaseStatement(CaseClause::Then));
         self.push_to_current_target(FormatElement::Token(token));
-        self.start_group();
+        self.start_group(Some(SqlContext::CaseStatement(CaseClause::Then)));
         self.push_to_current_target(FormatElement::Indent);
         self.push_to_current_target(FormatElement::Space);
     }
@@ -489,9 +466,8 @@ impl FormatAstBuilder {
     fn handle_else(&mut self, token: Token) {
         self.move_to_case_root();
         self.push_to_current_target(FormatElement::SoftBreak);
-        self.push_context(SqlContext::CaseStatement(CaseClause::Else));
         self.push_to_current_target(FormatElement::Token(token));
-        self.start_group(); // ELSE group
+        self.start_group(Some(SqlContext::CaseStatement(CaseClause::Else)));
         self.push_to_current_target(FormatElement::Indent);
         self.push_to_current_target(FormatElement::Space);
     }
@@ -533,18 +509,8 @@ impl FormatAstBuilder {
     }
 
     fn handle_keyword(&mut self, token: Token) {
-        let keyword = token.value().to_uppercase();
-        match keyword.as_str() {
-            "AND" | "OR" | "*" => {
-                self.push_to_current_target(FormatElement::SoftBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Space);
-            }
-            _ => {
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Space);
-            }
-        }
+        self.push_to_current_target(FormatElement::Token(token));
+        self.push_to_current_target(FormatElement::Space);
     }
 
     fn handle_value(&mut self, token: Token) {
@@ -567,30 +533,12 @@ impl FormatAstBuilder {
 
     fn handle_comma(&mut self, token: Token) {
         self.push_to_current_target(FormatElement::Token(token));
-
-        // Check if we're in any group (not just InList)
-        if !self.group_stack.is_empty() {
-            // In a group: use soft breaks that adapt to width
-            self.push_to_current_target(FormatElement::SoftBreak);
-        } else {
-            // Outside groups: use context-specific formatting
-            match self.current_context() {
-                SqlContext::SelectBlockClause(SqlClause::SelectFields) => {
-                    self.push_to_current_target(FormatElement::HardBreak);
-                }
-                SqlContext::SelectBlockClause(SqlClause::GroupBy) => {
-                    // First comma in GROUP BY: switch to multiline and indent
-                    if self.group_stack.is_empty() {
-                        // Start a group and break after GROUP BY
-                        self.start_group();
-                        self.insert_group_by_break();
-                        self.push_to_current_target(FormatElement::Indent);
-                    }
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                }
-                _ => {
-                    self.push_to_current_target(FormatElement::Space);
-                }
+        match self.current_context() {
+            SqlContext::WithClause => {
+                self.push_to_current_target(FormatElement::LineGap);
+            }
+            _ => {
+                self.push_to_current_target(FormatElement::SoftBreak);
             }
         }
     }
@@ -616,31 +564,33 @@ impl FormatAstBuilder {
 
     fn handle_left_paren(&mut self, token: Token) {
         self.push_to_current_target(FormatElement::Token(token));
-        self.start_group();
+        let peek_type = self.peek_type();
+
+        if matches!(peek_type, Some(TokenType::Star)) {
+            let next_t = FormatElement::Token(self.advance().unwrap());
+            self.start_group(Some(SqlContext::Parens));
+            self.push_to_current_target(next_t);
+            return;
+        }
+
         let mut context_buff: Vec<SqlContext> = Vec::new();
         if let Some(SqlContext::WindowOver) = self.context_stack.last() {
             context_buff.push(self.context_stack.pop().unwrap());
         }
-        self.push_context(SqlContext::Parens);
+        self.start_group(Some(SqlContext::Parens));
         for element in context_buff.iter() {
             self.push_context(element.clone());
         }
-        if let Some(next_token) = self.peek() {
-            match next_token.token_type {
-                TokenType::Select => {
-                    self.push_to_current_target(FormatElement::SoftLine);
-                    self.push_to_current_target(FormatElement::Indent);
-                    self.push_context(SqlContext::SubQuery);
-                }
-                _ => {
-                    self.push_to_current_target(FormatElement::SoftLine);
-                    self.push_to_current_target(FormatElement::Indent);
-                }
+        match peek_type {
+            Some(TokenType::Select) => {
+                self.push_to_current_target(FormatElement::SoftLine);
+                self.push_to_current_target(FormatElement::Indent);
+                self.push_context(SqlContext::SubQuery);
             }
-        } else {
-            // Default - start with softline + indent
-            self.push_to_current_target(FormatElement::SoftLine);
-            self.push_to_current_target(FormatElement::Indent);
+            _ => {
+                self.push_to_current_target(FormatElement::SoftLine);
+                self.push_to_current_target(FormatElement::Indent);
+            }
         }
     }
 
@@ -674,40 +624,59 @@ impl FormatAstBuilder {
         self.push_to_current_target(FormatElement::Space);
     }
 
-    fn handle_jinja_block(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::HardBreak);
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::HardBreak);
-    }
-
     fn handle_jinja_template(&mut self, token: Token) {
         self.push_to_current_target(FormatElement::Token(token));
         self.push_to_current_target(FormatElement::Space);
     }
 
-    fn insert_group_by_break(&mut self) {
-        // Find the most recent GROUP BY pattern and insert HardBreak after the Space
-        for i in (1..self.ast.elements.len()).rev() {
-            if let FormatElement::Token(ref token) = &self.ast.elements[i] {
-                if token.value().to_uppercase() == "BY" {
-                    // Look backward to check if this is preceded by GROUP
-                    if i >= 2 {
-                        if let FormatElement::Token(ref group_token) = &self.ast.elements[i - 2] {
-                            if group_token.value().to_uppercase() == "GROUP" {
-                                // Found GROUP BY - insert HardBreak after the Space
-                                // Pattern: GROUP, Space, BY, Space, [need HardBreak here]
-                                if i + 1 < self.ast.elements.len()
-                                    && matches!(&self.ast.elements[i + 1], FormatElement::Space)
-                                {
-                                    self.ast.elements.insert(i + 2, FormatElement::HardBreak);
-                                    return;
-                                }
-                            }
-                        }
-                    }
+    fn handle_jinja_start(&mut self, token: Token) {
+        self.push_to_current_target(FormatElement::HardBreak);
+        self.start_group(Some(SqlContext::JinjaBlock));
+        self.push_to_current_target(FormatElement::Token(token));
+        self.push_to_current_target(FormatElement::Indent);
+        self.push_to_current_target(FormatElement::HardBreak);
+    }
+
+    fn handle_jinja_transition(&mut self, token: Token) {
+        // End the current Jinja block
+        self.push_to_current_target(FormatElement::Dedent);
+        self.push_to_current_target(FormatElement::HardBreak);
+        self.end_group();
+
+        // Start the new Jinja block (elif/else)
+        self.start_group(None);
+        self.push_to_current_target(FormatElement::Token(token));
+        self.push_to_current_target(FormatElement::Indent);
+        self.push_to_current_target(FormatElement::HardBreak);
+    }
+
+    fn handle_jinja_end(&mut self, token: Token) {
+        // Close any SQL clauses that are still open within the Jinja block
+        while let Some(ctx) = self.context_stack.last() {
+            match ctx {
+                SqlContext::JinjaBlock => break,
+                SqlContext::SelectBlockClause(_) => {
+                    self.pop_context();
+                    self.push_to_current_target(FormatElement::Dedent);
+                    self.end_group();
+                }
+                _ => {
+                    self.pop_context();
                 }
             }
         }
+
+        // Pop the JinjaBlock context
+        self.pop_context();
+
+        // Close the current Jinja content with dedent
+        self.push_to_current_target(FormatElement::Dedent);
+        self.end_group();
+
+        // Put the end token on its own line at the same level as the opening tag
+        self.push_to_current_target(FormatElement::HardBreak);
+        self.push_to_current_target(FormatElement::Token(token));
+        self.push_to_current_target(FormatElement::HardBreak);
     }
 }
 

@@ -399,11 +399,14 @@ impl<'a> Tokenizer<'a> {
         let token_i = self.tokens.len();
 
         match &token.token_type {
+            TokenType::Comment => {
+                self.comment_buf.push(token);
+                Ok(())
+            }
             // Opening tokens that need pairing
             TokenType::LeftParen
             | TokenType::LeftBrace
             | TokenType::LeftBracket
-            | TokenType::Select
             | TokenType::Case
             | TokenType::JinjaIf
             | TokenType::JinjaFor => {
@@ -425,9 +428,6 @@ impl<'a> Tokenizer<'a> {
             TokenType::RightBrace => self.close_pair(&token, TokenType::LeftBrace, "{", token_i),
             TokenType::RightBracket => {
                 self.close_pair(&token, TokenType::LeftBracket, "[", token_i)
-            }
-            TokenType::From => {
-                self.close_optional_pair(&token, TokenType::Select, "SELECT", token_i)
             }
             TokenType::End => self.close_pair(&token, TokenType::Case, "CASE", token_i),
             TokenType::JinjaEndif => self.close_jinja_chain(&token, token_i),
