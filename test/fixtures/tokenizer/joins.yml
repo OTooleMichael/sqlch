@@ -3,7 +3,7 @@ file:
     sql: "SELECT * FROM users INNER JOIN profiles ON users.id = profiles.user_id"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: Identifier
@@ -30,7 +30,7 @@ file:
     sql: "SELECT * FROM users LEFT JOIN profiles ON users.id = profiles.user_id"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: Identifier
@@ -65,7 +65,7 @@ file:
         value: "COUNT"
       - type: LeftParen
         value: "("
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: RightParen
         value: ")"
@@ -82,7 +82,7 @@ file:
         value: "COUNT"
       - type: LeftParen
         value: "("
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: RightParen
         value: ")"
@@ -95,7 +95,7 @@ file:
     sql: "SELECT * FROM users WHERE active = true ORDER BY created_at"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: Identifier
@@ -117,7 +117,7 @@ file:
     sql: "SELECT * FROM users FULL JOIN profiles ON users.id = profiles.user_id"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: Identifier
@@ -145,7 +145,7 @@ file:
     sql: "SELECT * FROM users RIGHT JOIN profiles ON users.id = profiles.user_id"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: Identifier

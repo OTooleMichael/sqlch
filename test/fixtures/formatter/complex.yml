@@ -3,7 +3,7 @@ file:
     input: |
       SELECT id, name, email FROM users
       {% if filter_active %}
-      WHERE active = TRUE
+          WHERE active = TRUE
       {% endif %}
       ORDER BY created_at
     settings:

@@ -3,7 +3,7 @@ file:
     sql: "SELECT * FROM {{ table_name }} WHERE id = {{ user_id }}"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: TemplateVariable
@@ -20,7 +20,7 @@ file:
     sql: "SELECT * FROM users {% if active %}WHERE active = true{% endif %}"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: Identifier
@@ -61,7 +61,7 @@ file:
     sql: "SELECT * FROM {{ ref('users') }} WHERE status = {{ var('active_status') }}"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: TemplateVariable

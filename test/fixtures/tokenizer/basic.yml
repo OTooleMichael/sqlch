@@ -3,7 +3,7 @@ file:
     sql: "SELECT * FROM users"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: Identifier
@@ -33,7 +33,7 @@ file:
     sql: "SELECT * -- comment\nFROM users"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: Comment
         value: " comment"
@@ -45,7 +45,7 @@ file:
     sql: "SELECT * /* comment */ FROM users"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: Comment
         value: " comment "
@@ -57,7 +57,7 @@ file:
     sql: "SELECT * FROM users WHERE name = 'John'"
     tokens:
       - type: Select
-      - type: Operator
+      - type: "*"
         value: "*"
       - type: From
       - type: Identifier

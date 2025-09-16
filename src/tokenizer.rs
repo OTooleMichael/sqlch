@@ -288,6 +288,10 @@ impl Token {
         self.to_string(&dialect).len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn to_string(&self, dialect: &crate::dialect::Dialect) -> String {
         // Use provided value if available, otherwise use token type's default
         let base_value = match &self.value {

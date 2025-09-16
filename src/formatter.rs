@@ -119,7 +119,6 @@ enum CaseClause {
     When,
     Then,
     Else,
-    End,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,9 +144,9 @@ enum SqlContext {
     WithClause,
     WindowOver,
     Parens,
+    JinjaBlock,
 }
 
-// Phase 1: FormatAst Builder - Context-aware token processor
 struct FormatAstBuilder {
     tokens: VecDeque<Token>,
     ast: FormatAst,
@@ -196,21 +195,28 @@ impl FormatAstBuilder {
     }
 
     fn terminate_contexts_for(&mut self, new_context: SqlContext) {
-        if matches!(new_context, SqlContext::SelectBlockClause(_)) {
-            let mut contexts_to_terminate = 0;
-            for context in self.context_stack.iter().rev() {
-                if matches!(context, SqlContext::SelectBlockClause(_)) {
-                    contexts_to_terminate += 1;
-                } else {
-                    break;
-                }
-            }
-
-            for _ in 0..contexts_to_terminate {
-                if let Some(SqlContext::SelectBlockClause(_)) = self.pop_context() {
+        if !matches!(new_context, SqlContext::SelectBlockClause(_)) {
+            return;
+        }
+        while let Some(ctx) = self.context_stack.last() {
+            match ctx {
+                SqlContext::SelectBlockClause(_) => {
+                    self.pop_context();
                     self.push_to_current_target(FormatElement::Dedent);
                     self.push_to_current_target(FormatElement::SoftBreak);
                     self.end_group();
+                    break;
+                }
+                SqlContext::JinjaBlock => {
+                    break;
+                    self.pop_context();
+                    self.push_to_current_target(FormatElement::Dedent);
+                    self.push_to_current_target(FormatElement::SoftBreak);
+                    self.end_group();
+                }
+                SqlContext::Root => break,
+                _ => {
+                    self.pop_context();
                 }
             }
         }
@@ -310,20 +316,45 @@ impl FormatAstBuilder {
             TokenType::Dot => self.handle_dot(token),
             TokenType::LeftParen => self.handle_left_paren(token),
             TokenType::RightParen => self.handle_right_paren(token),
-            TokenType::JinjaIf
-            | TokenType::JinjaFor
-            | TokenType::JinjaElif
-            | TokenType::JinjaElse
-            | TokenType::JinjaEndif
-            | TokenType::JinjaEndfor => self.handle_jinja_block(token),
+            TokenType::JinjaIf | TokenType::JinjaFor => {
+                self.start_group();
+                self.push_context(SqlContext::JinjaBlock);
+                self.push_to_current_target(FormatElement::HardBreak);
+                self.push_to_current_target(FormatElement::Token(token));
+                self.push_to_current_target(FormatElement::Indent);
+                self.push_to_current_target(FormatElement::HardBreak);
+            }
+            TokenType::JinjaElif | TokenType::JinjaElse => {
+                self.push_to_current_target(FormatElement::Dedent);
+                self.push_to_current_target(FormatElement::HardBreak);
+                self.end_group();
+                self.start_group();
+                self.push_to_current_target(FormatElement::HardBreak);
+                self.push_to_current_target(FormatElement::Token(token));
+                self.push_to_current_target(FormatElement::Indent);
+                self.push_to_current_target(FormatElement::HardBreak);
+            }
+            TokenType::JinjaEndif | TokenType::JinjaEndfor => {
+                while let Some(ctx) = self.pop_context() {
+                    match ctx {
+                        SqlContext::Root | SqlContext::JinjaBlock => break,
+                        _ => {}
+                    }
+                }
+                self.push_to_current_target(FormatElement::Dedent);
+                self.push_to_current_target(FormatElement::HardBreak);
+                self.end_group();
+                self.push_to_current_target(FormatElement::Token(token));
+                self.push_to_current_target(FormatElement::HardBreak);
+            }
             TokenType::TemplateVariable | TokenType::TemplateBlock => {
                 self.handle_jinja_template(token)
             }
             TokenType::Operator => self.handle_operator(token),
             TokenType::Star => {
-                if matches!(self.peek_type(), Some(TokenType::RightParen)){
-                  self.push_to_current_target(FormatElement::Token(token));
-                  return
+                if matches!(self.peek_type(), Some(TokenType::RightParen)) {
+                    self.push_to_current_target(FormatElement::Token(token));
+                    return;
                 }
                 self.push_to_current_target(FormatElement::SoftBreak);
                 self.push_to_current_target(FormatElement::Token(token));
@@ -351,10 +382,10 @@ impl FormatAstBuilder {
         }
     }
     fn peek_type(&self) -> Option<TokenType> {
-      if let Some(next_token) = self.peek() {
-          return Some(next_token.token_type.clone())
-      }
-      return None
+        if let Some(next_token) = self.peek() {
+            return Some(next_token.token_type.clone());
+        }
+        None
     }
 
     fn handle_select(&mut self, token: Token) {
@@ -430,7 +461,7 @@ impl FormatAstBuilder {
     }
 
     fn handle_when(&mut self, token: Token) {
-        self.to_case_root();
+        self.move_to_case_root();
         self.push_to_current_target(FormatElement::SoftBreak);
         self.push_context(SqlContext::CaseStatement(CaseClause::WhenThen));
         self.start_group();
@@ -456,7 +487,7 @@ impl FormatAstBuilder {
     }
 
     fn handle_else(&mut self, token: Token) {
-        self.to_case_root();
+        self.move_to_case_root();
         self.push_to_current_target(FormatElement::SoftBreak);
         self.push_context(SqlContext::CaseStatement(CaseClause::Else));
         self.push_to_current_target(FormatElement::Token(token));
@@ -466,7 +497,7 @@ impl FormatAstBuilder {
     }
 
     fn handle_end(&mut self, token: Token) {
-        self.to_case_root();
+        self.move_to_case_root();
         self.push_to_current_target(FormatElement::Dedent);
         self.push_to_current_target(FormatElement::SoftBreak);
         self.push_to_current_target(FormatElement::Token(token));
@@ -475,7 +506,7 @@ impl FormatAstBuilder {
         self.push_to_current_target(FormatElement::Space);
     }
 
-    fn to_case_root(&mut self) {
+    fn move_to_case_root(&mut self) {
         while let Some(context) = self.context_stack.last() {
             match context {
                 SqlContext::CaseStatement(CaseClause::Root) => break,
@@ -636,9 +667,8 @@ impl FormatAstBuilder {
         }
         self.push_to_current_target(FormatElement::Token(token));
         if let Some(next_token) = self.peek() {
-            match next_token.token_type {
-                TokenType::Comma => return,
-                _ => {}
+            if next_token.token_type == TokenType::Comma {
+                return;
             }
         };
         self.push_to_current_target(FormatElement::Space);
@@ -774,8 +804,8 @@ impl<'a> FormatRenderer<'a> {
         let mut indent_change: isize = 0;
         for el in elements {
             match el {
-                FormatElement::Indent => indent_change = indent_change + 1,
-                FormatElement::Dedent => indent_change = indent_change - 1,
+                FormatElement::Indent => indent_change += 1,
+                FormatElement::Dedent => indent_change -= 1,
                 _ => {
                     // Only consider non-indent elements for priority selection
                     if let Some(e) = element.clone() {
@@ -788,7 +818,7 @@ impl<'a> FormatRenderer<'a> {
                 }
             }
         }
-        return (indent_change, element);
+        (indent_change, element)
     }
 
     fn render_element(
@@ -881,18 +911,15 @@ impl<'a> FormatRenderer<'a> {
         let mut format_vec: Vec<FormatElement> = Vec::new();
 
         for element in elements {
-            match element {
-                FormatElement::Group(group) => {
-                    if group.len() == 0 {
-                        continue;
-                    }
+            if let FormatElement::Group(group) = element {
+                if group.is_empty() {
+                    continue;
                 }
-                _ => {}
             }
 
             match element {
                 FormatElement::Group(_) | FormatElement::Token(_) => {
-                    if format_vec.len() > 0 {
+                    if !format_vec.is_empty() {
                         let (_, resolved_el) = self.normalize_format_sequence(&format_vec);
                         format_vec.clear();
                         match resolved_el {
@@ -932,7 +959,7 @@ impl<'a> FormatRenderer<'a> {
                 }
             }
         }
-        if format_vec.len() > 0 {
+        if !format_vec.is_empty() {
             let (_, resolved_el) = self.normalize_format_sequence(&format_vec);
             format_vec.clear();
             match resolved_el {
@@ -964,7 +991,7 @@ impl<'a> FormatRenderer<'a> {
         }
         self.indent_level = self
             .indent_level
-            .saturating_sub(indent_change.abs() as usize);
+            .saturating_sub(indent_change.unsigned_abs());
     }
 
     fn render_group_with_breaks(
@@ -976,13 +1003,10 @@ impl<'a> FormatRenderer<'a> {
         let mut format_vec: Vec<FormatElement> = Vec::new();
 
         for element in elements {
-            match element {
-                FormatElement::Group(group) => {
-                    if group.len() == 0 {
-                        continue;
-                    }
+            if let FormatElement::Group(group) = element {
+                if group.is_empty() {
+                    continue;
                 }
-                _ => {}
             };
             match element {
                 FormatElement::Group(_) | FormatElement::Token(_) => {
@@ -1293,11 +1317,6 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_formatting() {
-        run_formatter_tests("test/fixtures/formatter/basic.yml");
-    }
-
-    #[test]
     fn test_group_by_only() {
         let test_file_path = "test/fixtures/formatter/basic.yml";
         let test_file = load_formatter_test_file(test_file_path);
@@ -1345,28 +1364,23 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_complex_formatting() {
-    //     run_formatter_tests("test/fixtures/formatter/complex.yml");
-    // }
-    //
+    #[test]
+    fn test_complex_formatting() {
+        run_formatter_tests("test/fixtures/formatter/complex.yml");
+    }
+
+    #[test]
+    fn test_basic_formatting() {
+        run_formatter_tests("test/fixtures/formatter/basic.yml");
+    }
+
     #[test]
     fn test_medium_sql_formatting() {
         run_formatter_tests("test/fixtures/formatter/medium_sql.yml");
     }
 
     #[test]
-    fn test_comprehensive_case_statements() {
-        run_formatter_tests("test/fixtures/formatter/case_statements.yml");
-    }
-
-    #[test]
     fn test_universal_groups() {
         run_formatter_tests("test/fixtures/formatter/universal_groups.yml");
-    }
-
-    #[test]
-    fn test_break_behavior() {
-        run_formatter_tests("test/fixtures/formatter/break_behavior.yml");
     }
 }

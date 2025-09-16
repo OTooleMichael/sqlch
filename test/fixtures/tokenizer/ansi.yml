@@ -23,7 +23,7 @@ file:
         value: "="
       - type: Keyword
         value: "true"
-      - type: Keyword
+      - type: AND
         value: "AND"
       - type: Identifier
         value: "created_at"
