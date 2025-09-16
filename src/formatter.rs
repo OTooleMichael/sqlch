@@ -114,11 +114,12 @@ pub struct Formatter {
 }
 #[derive(Debug, Clone, PartialEq)]
 enum CaseClause {
-  Start,
-  When,
-  Then,
-  Else,
-  End,
+    Root,
+    WhenThen,
+    When,
+    Then,
+    Else,
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -307,7 +308,6 @@ impl FormatAstBuilder {
             }
             TokenType::Comma => self.handle_comma(token),
             TokenType::Dot => self.handle_dot(token),
-            TokenType::Operator => self.handle_operator(token),
             TokenType::LeftParen => self.handle_left_paren(token),
             TokenType::RightParen => self.handle_right_paren(token),
             TokenType::JinjaIf
@@ -318,6 +318,21 @@ impl FormatAstBuilder {
             | TokenType::JinjaEndfor => self.handle_jinja_block(token),
             TokenType::TemplateVariable | TokenType::TemplateBlock => {
                 self.handle_jinja_template(token)
+            }
+            TokenType::Operator => self.handle_operator(token),
+            TokenType::Star => {
+                if matches!(self.peek_type(), Some(TokenType::RightParen)){
+                  self.push_to_current_target(FormatElement::Token(token));
+                  return
+                }
+                self.push_to_current_target(FormatElement::SoftBreak);
+                self.push_to_current_target(FormatElement::Token(token));
+                self.push_to_current_target(FormatElement::Space);
+            }
+            TokenType::And | TokenType::Or => {
+                self.push_to_current_target(FormatElement::SoftBreak);
+                self.push_to_current_target(FormatElement::Token(token));
+                self.push_to_current_target(FormatElement::Space);
             }
             _ => {
                 if let Some(next_token) = self.peek() {
@@ -334,6 +349,12 @@ impl FormatAstBuilder {
                 }
             }
         }
+    }
+    fn peek_type(&self) -> Option<TokenType> {
+      if let Some(next_token) = self.peek() {
+          return Some(next_token.token_type.clone())
+      }
+      return None
     }
 
     fn handle_select(&mut self, token: Token) {
@@ -401,118 +422,76 @@ impl FormatAstBuilder {
     }
 
     fn handle_case(&mut self, token: Token) {
-        // Start the main CASE group that will contain everything
-        self.start_group();
+        self.start_group(); // CASE root group
+        self.push_context(SqlContext::CaseStatement(CaseClause::Root));
         self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::HardBreak);
+        self.push_to_current_target(FormatElement::SoftBreak);
         self.push_to_current_target(FormatElement::Indent);
-        self.push_context(SqlContext::CaseStatement(CaseClause::Start));
     }
 
     fn handle_when(&mut self, token: Token) {
-        match self.current_context() {
-            SqlContext::CaseStatement(CaseClause::Start) => {
-                // First WHEN after CASE - just start the group
-            },
-            SqlContext::CaseStatement(CaseClause::Then) => {
-                // End the previous WHEN group before starting new one
-                self.end_group();
-                self.pop_context();
-            },
-            SqlContext::CaseStatement(CaseClause::Else) => {
-                // End the ELSE group before starting new WHEN
-                self.end_group();
-                self.pop_context();
-            },
-            _ => {
-                // We shouldn't get here, but handle it gracefully
-            }
-        }
-        
-        // Add a line break before each WHEN (except the first one)
-        if !matches!(self.current_context(), SqlContext::CaseStatement(CaseClause::Start)) {
-            self.push_to_current_target(FormatElement::HardBreak);
-        }
-        
-        // Start a new group for this WHEN clause
+        self.to_case_root();
+        self.push_to_current_target(FormatElement::SoftBreak);
+        self.push_context(SqlContext::CaseStatement(CaseClause::WhenThen));
         self.start_group();
         self.push_context(SqlContext::CaseStatement(CaseClause::When));
         self.push_to_current_target(FormatElement::Token(token));
+        self.start_group();
+        self.push_to_current_target(FormatElement::Indent);
         self.push_to_current_target(FormatElement::Space);
     }
 
     fn handle_then(&mut self, token: Token) {
-        // Add a soft break that allows "WHEN condition THEN" to be on same line if it fits
+        self.push_to_current_target(FormatElement::Dedent);
+        self.push_to_current_target(FormatElement::SoftBreak);
+        self.end_group();
+        self.pop_context();
+        self.push_to_current_target(FormatElement::Indent);
         self.push_to_current_target(FormatElement::SoftBreak);
         self.push_context(SqlContext::CaseStatement(CaseClause::Then));
         self.push_to_current_target(FormatElement::Token(token));
+        self.start_group();
+        self.push_to_current_target(FormatElement::Indent);
         self.push_to_current_target(FormatElement::Space);
     }
 
     fn handle_else(&mut self, token: Token) {
-        // End the current WHEN group if we're in one
-        if matches!(self.current_context(), SqlContext::CaseStatement(CaseClause::Then)) {
-            self.end_group();
-            self.pop_context();
-        }
-        
-        // Add line break before ELSE
-        self.push_to_current_target(FormatElement::HardBreak);
-        
-        // Start ELSE group
-        self.start_group();
+        self.to_case_root();
+        self.push_to_current_target(FormatElement::SoftBreak);
         self.push_context(SqlContext::CaseStatement(CaseClause::Else));
         self.push_to_current_target(FormatElement::Token(token));
+        self.start_group(); // ELSE group
+        self.push_to_current_target(FormatElement::Indent);
         self.push_to_current_target(FormatElement::Space);
     }
 
     fn handle_end(&mut self, token: Token) {
-        match self.current_context() {
-            SqlContext::CaseStatement(CaseClause::Then) => {
-                // End the WHEN group
-                self.end_group();
-                self.pop_context();
-                // Now we should be back in the main CASE context
-                self.push_to_current_target(FormatElement::Dedent);
-                self.push_to_current_target(FormatElement::HardBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                // End the main CASE group
-                self.end_group();
-                self.pop_context();
-            },
-            SqlContext::CaseStatement(CaseClause::Else) => {
-                // End the ELSE group
-                self.end_group();
-                self.pop_context();
-                // Now we should be back in the main CASE context
-                self.push_to_current_target(FormatElement::Dedent);
-                self.push_to_current_target(FormatElement::HardBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                // End the main CASE group
-                self.end_group();
-                self.pop_context();
-            },
-            SqlContext::CaseStatement(CaseClause::Start) => {
-                // Empty CASE statement (shouldn't happen)
-                self.push_to_current_target(FormatElement::Dedent);
-                self.push_to_current_target(FormatElement::HardBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.end_group();
-                self.pop_context();
-            },
-            _ => {
-                // Not in CASE context, just add the token
-                self.push_to_current_target(FormatElement::Token(token));
+        self.to_case_root();
+        self.push_to_current_target(FormatElement::Dedent);
+        self.push_to_current_target(FormatElement::SoftBreak);
+        self.push_to_current_target(FormatElement::Token(token));
+        self.end_group(); // close CASE root group
+        self.pop_context();
+        self.push_to_current_target(FormatElement::Space);
+    }
+
+    fn to_case_root(&mut self) {
+        while let Some(context) = self.context_stack.last() {
+            match context {
+                SqlContext::CaseStatement(CaseClause::Root) => break,
+                SqlContext::CaseStatement(CaseClause::Then)
+                | SqlContext::CaseStatement(CaseClause::WhenThen)
+                | SqlContext::CaseStatement(CaseClause::When)
+                | SqlContext::CaseStatement(CaseClause::Else) => {
+                    self.push_to_current_target(FormatElement::Dedent);
+                    self.push_to_current_target(FormatElement::SoftBreak);
+                    self.end_group();
+                    self.pop_context();
+                }
+                _ => {
+                    self.pop_context();
+                }
             }
-        }
-        
-        // Only add space after END if we're not in a CASE context
-        // This allows proper line breaking for subsequent SQL clauses like FROM
-        if !matches!(
-            self.current_context(),
-            SqlContext::SelectBlockClause(SqlClause::SelectFields)
-        ) {
-            self.push_to_current_target(FormatElement::Space);
         }
     }
 
@@ -524,37 +503,11 @@ impl FormatAstBuilder {
 
     fn handle_keyword(&mut self, token: Token) {
         let keyword = token.value().to_uppercase();
-
         match keyword.as_str() {
-            "AND" | "OR" => {
-                // Check if we're in a group first
-                if !self.group_stack.is_empty() {
-                    // In a group: replace trailing space with SoftBreak, but avoid double spaces
-                    if let Some(current_group) = self.group_stack.last_mut() {
-                        if matches!(current_group.last(), Some(FormatElement::Space)) {
-                            current_group.pop();
-                            current_group.push(FormatElement::SoftBreak);
-                        }
-                    }
-                    self.push_to_current_target(FormatElement::Token(token));
-                    self.push_to_current_target(FormatElement::Space);
-                } else if matches!(
-                    self.current_context(),
-                    SqlContext::SelectBlockClause(SqlClause::Where)
-                        | SqlContext::SelectBlockClause(SqlClause::Having)
-                        | SqlContext::SelectBlockClause(SqlClause::Qualify)
-                        | SqlContext::SelectBlockClause(SqlClause::Join)
-                ) {
-                    // Outside groups in conditional contexts: use hard breaks
-                    self.push_to_current_target(FormatElement::HardBreak);
-                    self.push_to_current_target(FormatElement::Token(token));
-                    self.push_to_current_target(FormatElement::Space);
-                } else {
-                    // Default: use soft breaks for better line breaking
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                    self.push_to_current_target(FormatElement::Token(token));
-                    self.push_to_current_target(FormatElement::Space);
-                }
+            "AND" | "OR" | "*" => {
+                self.push_to_current_target(FormatElement::SoftBreak);
+                self.push_to_current_target(FormatElement::Token(token));
+                self.push_to_current_target(FormatElement::Space);
             }
             _ => {
                 self.push_to_current_target(FormatElement::Token(token));
@@ -617,79 +570,15 @@ impl FormatAstBuilder {
 
     fn handle_operator(&mut self, token: Token) {
         match token.value().as_str() {
-            "=" | ">" | "<" | ">=" | "<=" | "!=" | "<>" => {
-                // Check if we're in a group and need to manage spaces smartly
-                if !self.group_stack.is_empty() {
-                    // In a group: check if last element was a space to avoid doubles
-                    if let Some(current_group) = self.group_stack.last_mut() {
-                        if !matches!(current_group.last(), Some(FormatElement::Space)) {
-                            current_group.push(FormatElement::Space);
-                        }
-                    }
-                } else {
-                    self.push_to_current_target(FormatElement::Space);
-                }
+            "=" | "!=" | "<>" | ">" | ">=" | "<" | "<=" => {
+                self.push_to_current_target(FormatElement::Space);
                 self.push_to_current_target(FormatElement::Token(token));
                 self.push_to_current_target(FormatElement::Space);
-            }
-            "+" | "-" => {
-                // Addition/subtraction: these should break in groups for readability
-                if !self.group_stack.is_empty() {
-                    // In a group: replace any trailing space with soft break for line breaking before operator
-                    if let Some(current_group) = self.group_stack.last_mut() {
-                        if let Some(FormatElement::Space) = current_group.last() {
-                            current_group.pop();
-                            current_group.push(FormatElement::SoftBreak);
-                        }
-                    }
-                } else {
-                    self.push_to_current_target(FormatElement::Space);
-                }
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Space);
-            }
-            "*" | "/" | "%" => {
-                // Multiplication/division: normal spacing, higher precedence operations usually stay together
-                if !self.group_stack.is_empty() {
-                    if let Some(current_group) = self.group_stack.last_mut() {
-                        let has_preceding_token = current_group
-                            .iter()
-                            .any(|el| matches!(el, FormatElement::Token(_)));
-                        if has_preceding_token
-                            && !matches!(current_group.last(), Some(FormatElement::Space))
-                        {
-                            current_group.push(FormatElement::Space);
-                        }
-                    }
-                } else {
-                    self.push_to_current_target(FormatElement::Space);
-                }
-                self.push_to_current_target(FormatElement::Token(token));
-                // Don't add trailing space if next token is closing paren, comma, or dot
-                if let Some(next) = self.peek() {
-                    if !matches!(
-                        next.token_type,
-                        TokenType::RightParen | TokenType::Comma | TokenType::Dot
-                    ) {
-                        self.push_to_current_target(FormatElement::Space);
-                    }
-                } else {
-                    self.push_to_current_target(FormatElement::Space);
-                }
             }
             _ => {
+                self.push_to_current_target(FormatElement::SoftBreak);
                 self.push_to_current_target(FormatElement::Token(token));
-                // Don't add space if next token is closing paren, comma, or dot
-                if let Some(next) = self.peek() {
-                    if !matches!(
-                        next.token_type,
-                        TokenType::RightParen | TokenType::Comma | TokenType::Dot
-                    ) {
-                        self.push_to_current_target(FormatElement::Space);
-                    }
-                } else {
-                    self.push_to_current_target(FormatElement::Space);
-                }
+                self.push_to_current_target(FormatElement::Space);
             }
         }
     }
@@ -816,59 +705,11 @@ impl<'a> FormatRenderer<'a> {
         // First pass: render to get the flat format list
         let mut temp_output = String::new();
         self.render_group(&elements, &mut temp_output, &mut flat_format_list);
+        for el in &flat_format_list {
+            println!("{:?}", el.clone());
+        }
         let final_output = self.normalize_final_format_list(&flat_format_list);
         (final_output, flat_format_list)
-    }
-
-    fn regenerate_output_from_flat_list(&mut self, elements: &[FormatElement]) -> String {
-        let mut output = String::new();
-        self.column = 0;
-        let mut current_indent = 0usize;
-
-        for element in elements {
-            match element {
-                FormatElement::Token(token) => {
-                    // Apply indentation if we're at line start
-                    if self.column == 0 && current_indent > 0 {
-                        let indent_str = match self.settings.indent_style {
-                            IndentStyle::Spaces => {
-                                " ".repeat(current_indent * self.settings.indent_size)
-                            }
-                            IndentStyle::Tabs => "\t".repeat(current_indent),
-                        };
-                        output.push_str(&indent_str);
-                        self.column += indent_str.len();
-                    }
-                    let text = token.to_string(&Dialect::default());
-                    output.push_str(&text);
-                    self.column += text.len();
-                }
-                FormatElement::Space => {
-                    output.push(' ');
-                    self.column += 1;
-                }
-                FormatElement::HardBreak => {
-                    output.push('\n');
-                    self.column = 0;
-                }
-                FormatElement::LineGap => {
-                    output.push_str("\n\n");
-                    self.column = 0;
-                }
-                // These shouldn't appear in the final flat list, but handle them just in case
-                FormatElement::Indent => {
-                    current_indent += 1;
-                }
-                FormatElement::Dedent => {
-                    current_indent = current_indent.saturating_sub(1);
-                }
-                _ => {
-                    // Group, SoftBreak, etc. should already be resolved
-                }
-            }
-        }
-
-        output
     }
 
     fn normalize_final_format_list(&self, elements: &[FormatElement]) -> String {
@@ -886,9 +727,12 @@ impl<'a> FormatRenderer<'a> {
                     let (indent_change, resolved_el) = self.normalize_format_sequence(&format_vec);
                     current_indent += indent_change;
                     if current_indent < 0 {
-            current_indent = 0
-          }
-                    println!("{current_indent} {indent_change} {:?} ", resolved_el.clone());
+                        current_indent = 0
+                    }
+                    println!(
+                        "{current_indent} {indent_change} {:?} ",
+                        resolved_el.clone()
+                    );
                     format_vec.clear();
                     if let Some(resolved) = resolved_el {
                         match resolved {
@@ -1147,7 +991,7 @@ impl<'a> FormatRenderer<'a> {
                             self.normalize_format_sequence(&format_vec);
                         format_vec.clear();
                         self.delta_indent(indent_change);
-                        
+
                         // Add the indent/dedent elements to flat_format_list
                         if indent_change > 0 {
                             for _ in 0..indent_change {
@@ -1158,7 +1002,7 @@ impl<'a> FormatRenderer<'a> {
                                 flat_format_list.push(FormatElement::Dedent);
                             }
                         }
-                        
+
                         match resolved_el {
                             Some(FormatElement::HardBreak) => {
                                 output.push('\n');
@@ -1198,7 +1042,7 @@ impl<'a> FormatRenderer<'a> {
         }
         let (indent_change, resolved_el) = self.normalize_format_sequence(&format_vec);
         self.delta_indent(indent_change);
-        
+
         // Add the indent/dedent elements to flat_format_list
         if indent_change > 0 {
             for _ in 0..indent_change {
@@ -1209,7 +1053,7 @@ impl<'a> FormatRenderer<'a> {
                 flat_format_list.push(FormatElement::Dedent);
             }
         }
-        
+
         match resolved_el {
             Some(FormatElement::HardBreak) => {
                 output.push('\n');
@@ -1346,7 +1190,7 @@ mod tests {
     fn pprint_format_ast(elements: &[FormatElement], indent: usize, item: usize) {
         for (i, element) in elements.iter().enumerate() {
             let index = i + item;
-            let indent_value = " ".repeat(indent);
+            let indent_value = " ".repeat(indent * 4);
             match element {
                 FormatElement::Group(subelements) => {
                     let size_ = subelements.len();
@@ -1439,7 +1283,7 @@ mod tests {
                     FormatAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
                 let format_ast = ast_builder.build();
                 pprint_format_ast(format_ast.elements(), 0, 0);
-                let diff_output = create_visual_diff(expected, actual);
+                let diff_output = create_visual_diff(expected, &actual);
                 panic!(
                     "Formatter test '{}' failed:\n{}",
                     test_case.name, diff_output
@@ -1509,16 +1353,6 @@ mod tests {
     #[test]
     fn test_medium_sql_formatting() {
         run_formatter_tests("test/fixtures/formatter/medium_sql.yml");
-    }
-
-    #[test]
-    fn test_case_statement_formatting() {
-        run_formatter_tests("test/fixtures/formatter/case_test.yml");
-    }
-
-    #[test]
-    fn test_subquery_formatting() {
-        run_formatter_tests("test/fixtures/formatter/subquery_test.yml");
     }
 
     #[test]

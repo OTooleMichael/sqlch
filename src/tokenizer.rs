@@ -36,6 +36,9 @@ pub enum TokenType {
     From,
     Case,
     End,
+    And,
+    Or,
+    Star,
     // Additional SQL keywords as first-class tokens
     Where,
     Having,
@@ -108,6 +111,9 @@ impl TokenType {
             TokenType::End => Some("END"),
             TokenType::Qualify => Some("QUALIFY"),
 
+            TokenType::And => Some("AND"),
+            TokenType::Or => Some("OR"),
+            TokenType::Star => Some("*"),
             // Multi-word SQL constructs
             TokenType::GroupBy => Some("GROUP BY"),
             TokenType::OrderBy => Some("ORDER BY"),
@@ -799,6 +805,8 @@ impl<'a> Tokenizer<'a> {
         let token_type = match ident_upper.as_str() {
             "SELECT" => TokenType::Select,
             "FROM" => TokenType::From,
+            "AND" => TokenType::And,
+            "OR" => TokenType::Or,
             "CASE" => TokenType::Case,
             "END" => TokenType::End,
             "WHERE" => TokenType::Where,
@@ -1195,6 +1203,10 @@ impl<'a> Tokenizer<'a> {
             self.advance();
         }
         let end = self.current_pos.map(|(b, _)| b).unwrap_or(self.input.len());
+        let value = self.input[start..end].to_string();
+        if value == "*" {
+            return Ok(Token::new(TokenType::Star, None, start));
+        }
         Ok(Token::new(
             TokenType::Operator,
             Some(self.input[start..end].to_string()),
@@ -1385,6 +1397,9 @@ mod tests {
                 if let Some(ref expected_type) = expected.token_type {
                     let actual_type = match actual.token_type {
                         TokenType::Keyword => "Keyword",
+                        TokenType::Or => "OR",
+                        TokenType::And => "AND",
+                        TokenType::Star => "*",
                         TokenType::Identifier => "Identifier",
                         TokenType::StringLiteral => "StringLiteral",
                         TokenType::Number => "Number",

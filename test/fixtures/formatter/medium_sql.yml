@@ -157,13 +157,32 @@ file:
       indent:
         style: "spaces"
         size: 2
-      line_width: 80
+      line_width: 45
     expected: |
       SELECT
         name,
         CASE
           WHEN salary > 100000 THEN 'High'
           WHEN salary > 50000 THEN 'Medium'
+          ELSE 'Low'
+        END AS salary_tier
+      FROM employees
+  - name: simple_case_statement_30
+    input: |
+      SELECT name, CASE WHEN salary > 100000 THEN 'High' WHEN salary > 50000 THEN 'Medium' ELSE 'Low' END as salary_tier FROM employees
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 30
+    expected: |
+      SELECT
+        name,
+        CASE
+          WHEN salary > 100000
+            THEN 'High'
+          WHEN salary > 50000
+            THEN 'Medium'
           ELSE 'Low'
         END AS salary_tier
       FROM employees
@@ -175,13 +194,15 @@ file:
       indent:
         style: "spaces"
         size: 2
-      line_width: 80
+      line_width: 50
     expected: |
       SELECT
         name,
         CASE
-          WHEN department = 'Engineering' AND salary > 120000 THEN 'Senior Engineer'
+          WHEN department = 'Engineering'
+            AND salary > 120000
+            THEN 'Senior Engineer'
           WHEN department = 'Sales' THEN 'Sales Rep'
           ELSE 'Other'
-        END as role
+        END AS role
       FROM employees

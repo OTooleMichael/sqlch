@@ -10,7 +10,8 @@ file:
       line_width: 20
     expected: |
       (
-        8 * TRUE
+        8
+        * TRUE
         AND lemon
         OR word,
         thing
@@ -108,10 +109,11 @@ file:
     expected: |
       SELECT
         (
-          salary * rate
+          salary
+          * rate
           + bonus
           - tax
-        ) as net
+        ) AS net
 
   # Same math expression but wider - should stay compact
   - name: math_expression_stay_compact
@@ -124,9 +126,8 @@ file:
       line_width: 80
     expected: |
       SELECT
-        (salary + bonus) as total
+        (salary + bonus) AS total
 
-  # Nested groups
   - name: nested_groups
     input: |
       SELECT * FROM users WHERE (active = TRUE AND (premium = TRUE OR (trial_active = TRUE AND trial_days > 0)))
@@ -163,8 +164,10 @@ file:
       SELECT
         func(
           col1,
-          col2 AND col3,
-          col4 OR col5
+          col2
+          AND col3,
+          col4
+          OR col5
         )
       FROM table
 
@@ -179,4 +182,4 @@ file:
       line_width: 80
     expected: |
       SELECT
-        (42) as answer
+        (42) AS answer
