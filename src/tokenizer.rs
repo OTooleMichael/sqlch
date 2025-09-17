@@ -3,6 +3,13 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum CommentType {
+    DoubleDash,
+    DoubleDashLine,
+    MultiLine,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
     Keyword,
     Identifier,
@@ -21,7 +28,7 @@ pub enum TokenType {
     RightBrace,
     LeftBracket,
     RightBracket,
-    Comment,
+    Comment(CommentType),
     TemplateVariable,
     TemplateBlock,
     // Jinja control blocks
@@ -180,7 +187,7 @@ impl TokenType {
             | TokenType::Number
             | TokenType::Operator
             | TokenType::Punctuation
-            | TokenType::Comment
+            | TokenType::Comment(_)
             | TokenType::TemplateVariable
             | TokenType::TemplateBlock
             | TokenType::JinjaIf
@@ -350,6 +357,7 @@ pub struct Tokenizer<'a> {
     input: &'a str,
     chars_iter: std::str::CharIndices<'a>,
     current_pos: Option<(usize, char)>,
+    is_newline: bool,
     keyword_buf: Vec<Token>,
     comment_buf: Vec<Token>,
     keywords: HashMap<&'a str, bool>,
@@ -384,6 +392,7 @@ impl<'a> Tokenizer<'a> {
             current_pos,
             keyword_buf: Vec::new(),
             comment_buf: Vec::new(),
+            is_newline: true,
             keywords,
             pair_stack: Vec::new(),
             tokens: Vec::new(),
@@ -399,7 +408,7 @@ impl<'a> Tokenizer<'a> {
         let token_i = self.tokens.len();
 
         match &token.token_type {
-            TokenType::Comment => {
+            TokenType::Comment(_) => {
                 self.comment_buf.push(token);
                 Ok(())
             }
@@ -418,12 +427,8 @@ impl<'a> Tokenizer<'a> {
                 self.tokens.push(token);
                 Ok(())
             }
-
-            // Transition tokens that close previous and open new blocks
             TokenType::JinjaElif => self.close_and_reopen_chain(&token, "if/elif", token_i),
             TokenType::JinjaElse => self.close_and_reopen_chain(&token, "if/elif", token_i),
-
-            // Closing tokens that complete pairs
             TokenType::RightParen => self.close_pair(&token, TokenType::LeftParen, "(", token_i),
             TokenType::RightBrace => self.close_pair(&token, TokenType::LeftBrace, "{", token_i),
             TokenType::RightBracket => {
@@ -432,8 +437,6 @@ impl<'a> Tokenizer<'a> {
             TokenType::End => self.close_pair(&token, TokenType::Case, "CASE", token_i),
             TokenType::JinjaEndif => self.close_jinja_chain(&token, token_i),
             TokenType::JinjaEndfor => self.close_pair(&token, TokenType::JinjaFor, "for", token_i),
-
-            // All other tokens are just added
             _ => {
                 self.tokens.push(token);
                 Ok(())
@@ -591,7 +594,10 @@ impl<'a> Tokenizer<'a> {
 
     pub fn tokenize(&mut self) -> Result<TokenizerResult, TokenizerError> {
         while self.current_pos.is_some() {
-            match self.current_char() {
+            let is_newline = self.is_newline;
+            let char_ = self.current_char();
+            self.is_newline = Some('\n') == char_;
+            match char_ {
                 Some('{') if self.peek() == Some('{') => {
                     let token = self.tokenize_template_variable()?;
                     self.add_token(token)?;
@@ -620,7 +626,7 @@ impl<'a> Tokenizer<'a> {
                     self.add_token(token)?;
                 }
                 Some('-') if self.peek() == Some('-') => {
-                    let token = self.tokenize_comment()?;
+                    let token = self.tokenize_comment(is_newline)?;
                     self.add_token(token)?;
                 }
                 Some('/') if self.peek() == Some('*') => {
@@ -1218,7 +1224,7 @@ impl<'a> Tokenizer<'a> {
         ))
     }
 
-    fn tokenize_comment(&mut self) -> Result<Token, TokenizerError> {
+    fn tokenize_comment(&mut self, is_newline: bool) -> Result<Token, TokenizerError> {
         self.advance(); // consume first -
         self.advance(); // consume second -
         let start = self.current_pos.map(|(b, _)| b).unwrap_or(self.input.len());
@@ -1226,8 +1232,13 @@ impl<'a> Tokenizer<'a> {
             self.advance();
         }
         let end = self.current_pos.map(|(b, _)| b).unwrap_or(self.input.len());
+        let token_type = if is_newline {
+            TokenType::Comment(CommentType::DoubleDashLine)
+        } else {
+            TokenType::Comment(CommentType::DoubleDash)
+        };
         Ok(Token::new(
-            TokenType::Comment,
+            token_type,
             Some(self.input[start..end].to_string()),
             start,
         ))
@@ -1241,10 +1252,10 @@ impl<'a> Tokenizer<'a> {
         loop {
             if self.current_char() == Some('*') && self.peek() == Some('/') {
                 let end = self.current_pos.map(|(b, _)| b).unwrap();
-                self.advance(); // consume *
-                self.advance(); // consume /
+                self.advance();
+                self.advance();
                 return Ok(Token::new(
-                    TokenType::Comment,
+                    TokenType::Comment(CommentType::MultiLine),
                     Some(self.input[start..end].to_string()),
                     start,
                 ));
@@ -1417,7 +1428,7 @@ mod tests {
                         TokenType::RightBrace => "RightBrace",
                         TokenType::LeftBracket => "LeftBracket",
                         TokenType::RightBracket => "RightBracket",
-                        TokenType::Comment => "Comment",
+                        TokenType::Comment(_) => "Comment",
                         TokenType::TemplateVariable => "TemplateVariable",
                         TokenType::TemplateBlock => "TemplateBlock",
                         TokenType::JinjaIf => "JinjaIf",

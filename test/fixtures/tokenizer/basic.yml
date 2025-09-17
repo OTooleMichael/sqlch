@@ -35,8 +35,6 @@ file:
       - type: Select
       - type: "*"
         value: "*"
-      - type: Comment
-        value: " comment"
       - type: From
       - type: Identifier
         value: "users"
@@ -46,9 +44,6 @@ file:
     tokens:
       - type: Select
       - type: "*"
-        value: "*"
-      - type: Comment
-        value: " comment "
       - type: From
       - type: Identifier
         value: "users"
