@@ -11,6 +11,9 @@ pub enum CommentType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
+    // DataTypes
+    Varchar,
+    Decimal,
     Keyword,
     Identifier,
     StringLiteral,
@@ -104,6 +107,9 @@ pub enum TokenType {
 impl TokenType {
     pub fn default_value(&self) -> Option<&'static str> {
         match self {
+            // DataTypes
+            TokenType::Varchar => Some("VARCHAR"),
+            TokenType::Decimal => Some("DECIMAL"),
             // SQL keywords with fixed values
             TokenType::Select => Some("SELECT"),
             TokenType::From => Some("FROM"),
@@ -369,13 +375,12 @@ pub struct Tokenizer<'a> {
 impl<'a> Tokenizer<'a> {
     pub fn new(input: &'a str) -> Self {
         let mut keywords = HashMap::new();
-        // Add SQL keywords
         for kw in &[
             "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
             "DISTINCT", "TRUE", "FALSE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON",
             "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "UNION", "GROUP", "BY", "ORDER",
             "HAVING", "LIMIT", "OFFSET", "WITH", "CTE", "CASE", "WHEN", "THEN", "ELSE", "END",
-            "COPY", "INTO", "VALUES", "SET", "OVER",
+            "COPY", "INTO", "VALUES", "SET", "OVER", "VARCHAR", "DECIMAL",
         ] {
             keywords.insert(*kw, true);
         }
@@ -793,6 +798,8 @@ impl<'a> Tokenizer<'a> {
         // Check for special pairable tokens first
         let ident_upper = ident.to_uppercase();
         let token_type = match ident_upper.as_str() {
+            "VARCHAR" => TokenType::Varchar,
+            "DECIMAL" => TokenType::Decimal,
             "SELECT" => TokenType::Select,
             "FROM" => TokenType::From,
             "AND" => TokenType::And,
@@ -1391,6 +1398,8 @@ mod tests {
                 // Check token type if specified
                 if let Some(ref expected_type) = expected.token_type {
                     let actual_type = match actual.token_type {
+                        TokenType::Decimal => "Decimal",
+                        TokenType::Varchar => "Varchar",
                         TokenType::Keyword => "Keyword",
                         TokenType::Or => "OR",
                         TokenType::And => "AND",

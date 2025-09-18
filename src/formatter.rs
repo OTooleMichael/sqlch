@@ -2,6 +2,43 @@ use crate::dialect::Dialect;
 use crate::tokenizer::{CommentType, Token, TokenType};
 use serde::Deserialize;
 use std::collections::VecDeque;
+use std::slice;
+
+// Depth-first iterator over FormatAst
+pub struct WalkIter<'a> {
+    stack: Vec<slice::Iter<'a, FormatElement>>,
+}
+
+impl<'a> WalkIter<'a> {
+    fn new(ast: &'a FormatAst) -> Self {
+        Self {
+            stack: vec![ast.elements.iter()],
+        }
+    }
+}
+
+impl<'a> Iterator for WalkIter<'a> {
+    type Item = &'a FormatElement;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let iter = self.stack.last_mut()?;
+            if let Some(elem) = iter.next() {
+                match elem {
+                    FormatElement::Group(children) => {
+                        // yield the group itself *first*, then descend
+                        self.stack.push(children.iter());
+                        return Some(elem);
+                    }
+                    _ => return Some(elem),
+                }
+            } else {
+                // finished this level, pop and continue
+                self.stack.pop();
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum StackPopType {
@@ -44,6 +81,9 @@ pub struct FormatAst {
 }
 
 impl FormatAst {
+    pub fn walk(&self) -> WalkIter<'_> {
+        WalkIter::new(self)
+    }
     pub fn push(&mut self, element: FormatElement) {
         self.elements.push(element);
     }
@@ -118,6 +158,7 @@ pub struct Formatter {
     settings: FormatSettings,
     dialect: Dialect,
 }
+
 #[derive(Debug, Clone, PartialEq)]
 enum CaseClause {
     Root,
@@ -125,6 +166,16 @@ enum CaseClause {
     When,
     Then,
     Else,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ParenType {
+    WindowOver,
+    SubQuery,
+    CTESubQuery,
+    Function,
+    DataType,
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,13 +194,10 @@ enum SqlClause {
 #[derive(Debug, Clone, PartialEq)]
 enum SqlContext {
     Root,
-    SelectBlock,
     SelectBlockClause(SqlClause),
-    SubQuery,
     CaseStatement(CaseClause),
     WithClause,
-    WindowOver,
-    Parens,
+    Parens(ParenType),
     JinjaBlock,
 }
 
@@ -158,6 +206,7 @@ struct FormatAstBuilder {
     ast: FormatAst,
     context_stack: Vec<SqlContext>,
     group_stack: Vec<Vec<FormatElement>>,
+    format_mode: bool,
 }
 
 impl FormatAstBuilder {
@@ -165,6 +214,7 @@ impl FormatAstBuilder {
         let token_queue = VecDeque::from(tokens);
 
         Self {
+            format_mode: true,
             tokens: token_queue,
             ast: FormatAst::default(),
             context_stack: vec![SqlContext::Root],
@@ -223,25 +273,22 @@ impl FormatAstBuilder {
                 | SqlContext::CaseStatement(CaseClause::WhenThen)
                 | SqlContext::CaseStatement(CaseClause::When)
                 | SqlContext::CaseStatement(CaseClause::Else) => {
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                    self.end_group();
-                    self.pop_context();
+                    self.push(FormatElement::Dedent);
+                    self.push(FormatElement::SoftBreak);
+                    self.group_end();
                 }
                 SqlContext::SelectBlockClause(_) => {
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                    self.end_group();
-                    self.pop_context();
+                    self.push(FormatElement::Dedent);
+                    self.push(FormatElement::SoftBreak);
+                    self.group_end();
                 }
-                SqlContext::Parens => {
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.push_to_current_target(FormatElement::SoftLine);
-                    self.end_group();
-                    self.pop_context();
+                SqlContext::Parens(_) => {
+                    self.push(FormatElement::Dedent);
+                    self.push(FormatElement::SoftLine);
+                    self.group_end();
                 }
                 _ => {
-                    self.pop_context();
+                    self.group_end();
                 }
             }
             if matches!(stopper, Some(StackPopType::After)) {
@@ -265,19 +312,23 @@ impl FormatAstBuilder {
         )
     }
 
-    fn start_group(&mut self, ctx: Option<SqlContext>) {
-        if let Some(ctx_) = ctx {
-            self.push_context(ctx_)
-        }
+    fn group_start(&mut self, ctx: SqlContext) {
+        self.push_context(ctx);
         self.group_stack.push(Vec::new());
     }
 
-    fn end_group(&mut self) {
+    fn group_end(&mut self) {
         let latest_group = self.group_stack.pop().unwrap_or_default();
-        self.push_to_current_target(FormatElement::Group(latest_group));
+        self.push(FormatElement::Group(latest_group));
+        self.pop_context();
     }
 
-    fn push_to_current_target(&mut self, element: FormatElement) {
+    fn push(&mut self, element: FormatElement) {
+        if !self.format_mode
+            && !matches!(element, FormatElement::Token(_) | FormatElement::Group(_))
+        {
+            return;
+        }
         if let Some(current_group) = self.group_stack.last_mut() {
             current_group.push(element);
         } else {
@@ -304,9 +355,9 @@ impl FormatAstBuilder {
         match &token.token_type {
             TokenType::EOF => {
                 while !self.group_stack.is_empty() {
-                    self.end_group();
+                    self.group_end();
                 }
-                self.push_to_current_target(FormatElement::Token(token));
+                self.push(FormatElement::Token(token));
             }
             TokenType::Select => self.handle_select(token),
             TokenType::From => self.handle_from(token),
@@ -319,26 +370,33 @@ impl FormatAstBuilder {
                 self.handle_whereish(token, &token_type);
             }
             TokenType::OrderBy => {
-                if self.context_contains(SqlContext::WindowOver, 4) {
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                    self.push_to_current_target(FormatElement::Token(token));
-                    self.push_to_current_target(FormatElement::Space);
+                if self.context_contains(SqlContext::Parens(ParenType::WindowOver), 4) {
+                    self.push(FormatElement::SoftBreak);
+                    self.push(FormatElement::Token(token));
+                    self.push(FormatElement::Space);
                     return;
                 }
                 let token_type = token.token_type.clone();
                 self.handle_whereish(token, &token_type);
             }
             TokenType::Over => {
-                self.push_to_current_target(FormatElement::Space);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Space);
-                if let Some(next_token) = self.peek() {
-                    if next_token.token_type == TokenType::LeftParen {
-                        self.push_context(SqlContext::WindowOver)
-                    }
-                }
+                self.push(FormatElement::Space);
+                self.push(FormatElement::Token(token));
+                self.push(FormatElement::Space);
+                self.peek_left_paren_ctx(ParenType::WindowOver);
             }
-            TokenType::Keyword | TokenType::In | TokenType::As => self.handle_keyword(token),
+            TokenType::As => {
+                self.handle_keyword(token);
+                if !matches!(self.current_context(), SqlContext::WithClause) {
+                    return;
+                }
+                self.peek_left_paren_ctx(ParenType::CTESubQuery);
+            }
+            TokenType::Varchar | TokenType::Decimal => {
+                self.push(FormatElement::Token(token));
+                self.peek_left_paren_ctx(ParenType::DataType);
+            }
+            TokenType::Keyword | TokenType::In => self.handle_keyword(token),
             TokenType::PartitionBy => self.handle_partition_by(token),
             TokenType::Case => self.handle_case(token),
             TokenType::When => self.handle_when(token),
@@ -361,7 +419,7 @@ impl FormatAstBuilder {
             }
             TokenType::Comma => self.handle_comma(token),
             TokenType::Dot => self.handle_dot(token),
-            TokenType::LeftParen => self.handle_left_paren(token),
+            TokenType::LeftParen => self.handle_left_paren(token, ParenType::Other),
             TokenType::RightParen => self.handle_right_paren(token),
             TokenType::JinjaIf | TokenType::JinjaFor => {
                 self.handle_jinja_start(token);
@@ -378,28 +436,28 @@ impl FormatAstBuilder {
             TokenType::Operator => self.handle_operator(token),
             TokenType::Star => {
                 if matches!(self.peek_type(), Some(TokenType::RightParen)) {
-                    self.push_to_current_target(FormatElement::Token(token));
+                    self.push(FormatElement::Token(token));
                     return;
                 }
-                self.push_to_current_target(FormatElement::SoftBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Space);
+                self.push(FormatElement::SoftBreak);
+                self.push(FormatElement::Token(token));
+                self.push(FormatElement::Space);
             }
             TokenType::And | TokenType::Or => {
-                self.push_to_current_target(FormatElement::SoftBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Space);
+                self.push(FormatElement::SoftBreak);
+                self.push(FormatElement::Token(token));
+                self.push(FormatElement::Space);
             }
             _ => {
                 if let Some(next_token) = self.peek() {
                     match next_token.token_type {
                         TokenType::LeftParen => {
                             // Function call - we'll let left paren handling take care of grouping
-                            self.push_to_current_target(FormatElement::Token(token));
+                            self.push(FormatElement::Token(token));
                         }
                         _ => {
-                            self.push_to_current_target(FormatElement::Token(token));
-                            self.push_to_current_target(FormatElement::Space);
+                            self.push(FormatElement::Token(token));
+                            self.push(FormatElement::Space);
                         }
                     }
                 }
@@ -416,41 +474,40 @@ impl FormatAstBuilder {
 
     fn handle_select(&mut self, token: Token) {
         if self.current_context() == &SqlContext::WithClause {
-            self.pop_context();
-            self.push_to_current_target(FormatElement::LineGap);
+            self.group_end();
+            self.push(FormatElement::LineGap);
         }
-        self.push_to_current_target(FormatElement::Token(token));
+        self.group_start(SqlContext::SelectBlockClause(SqlClause::SelectFields));
+        self.push(FormatElement::Token(token));
         if let Some(next_token) = self.peek() {
             if matches!(next_token.token_type, TokenType::Keyword)
                 && next_token.value().to_uppercase() == "DISTINCT"
             {
-                self.push_to_current_target(FormatElement::Space);
+                self.push(FormatElement::Space);
                 let distinct = self.advance().unwrap();
-                self.push_to_current_target(FormatElement::Token(distinct));
+                self.push(FormatElement::Token(distinct));
             }
         }
-        self.start_group(Some(SqlContext::SelectBlock));
-        self.push_to_current_target(FormatElement::ShortBreak);
-        self.push_to_current_target(FormatElement::Indent);
-        self.push_context(SqlContext::SelectBlockClause(SqlClause::SelectFields));
+        self.push(FormatElement::ShortBreak);
+        self.push(FormatElement::Indent);
     }
 
     fn handle_from(&mut self, token: Token) {
         let ctx = SqlContext::SelectBlockClause(SqlClause::From);
         self.terminate_contexts_for(ctx.clone());
-        self.start_group(Some(ctx));
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Space);
+        self.group_start(ctx);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Space);
     }
 
     fn handle_join(&mut self, token: Token) {
         let ctx = SqlContext::SelectBlockClause(SqlClause::Join);
         self.terminate_contexts_for(ctx.clone());
-        self.push_to_current_target(FormatElement::HardBreak);
-        self.start_group(Some(ctx));
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Space);
-        self.push_to_current_target(FormatElement::Indent);
+        self.push(FormatElement::HardBreak);
+        self.group_start(ctx);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Space);
+        self.push(FormatElement::Indent);
     }
 
     fn handle_whereish(&mut self, token: Token, trigger: &TokenType) {
@@ -465,66 +522,67 @@ impl FormatAstBuilder {
         };
         let ctx = SqlContext::SelectBlockClause(cls);
         self.terminate_contexts_for(ctx.clone());
-        self.push_to_current_target(FormatElement::HardBreak);
-        self.start_group(Some(ctx));
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Space);
-        self.push_to_current_target(FormatElement::Indent);
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::HardBreak);
+        self.group_start(ctx);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Space);
+        self.push(FormatElement::Indent);
+        self.push(FormatElement::Space);
     }
 
     fn handle_partition_by(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Space);
     }
 
     fn handle_case(&mut self, token: Token) {
-        self.start_group(Some(SqlContext::CaseStatement(CaseClause::Root)));
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::SoftBreak);
-        self.push_to_current_target(FormatElement::Indent);
+        self.group_start(SqlContext::CaseStatement(CaseClause::Root));
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::SoftBreak);
+        self.push(FormatElement::Indent);
     }
 
     fn handle_when(&mut self, token: Token) {
         self.move_to_case_root();
-        self.push_to_current_target(FormatElement::SoftBreak);
-        self.start_group(Some(SqlContext::CaseStatement(CaseClause::WhenThen)));
-        self.push_to_current_target(FormatElement::Token(token));
-        self.start_group(Some(SqlContext::CaseStatement(CaseClause::When)));
-        self.push_to_current_target(FormatElement::Indent);
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::SoftBreak);
+        self.group_start(SqlContext::CaseStatement(CaseClause::WhenThen));
+
+        self.group_start(SqlContext::CaseStatement(CaseClause::When));
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Indent);
+        self.push(FormatElement::Space);
     }
 
     fn handle_then(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::Dedent);
-        self.push_to_current_target(FormatElement::SoftBreak);
-        self.end_group();
-        self.pop_context();
-        self.push_to_current_target(FormatElement::Indent);
-        self.push_to_current_target(FormatElement::SoftBreak);
-        self.push_to_current_target(FormatElement::Token(token));
-        self.start_group(Some(SqlContext::CaseStatement(CaseClause::Then)));
-        self.push_to_current_target(FormatElement::Indent);
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::Dedent);
+        self.push(FormatElement::SoftBreak);
+        self.group_end();
+        self.push(FormatElement::Indent);
+        self.push(FormatElement::SoftBreak);
+
+        self.group_start(SqlContext::CaseStatement(CaseClause::Then));
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Indent);
+        self.push(FormatElement::Space);
     }
 
     fn handle_else(&mut self, token: Token) {
         self.move_to_case_root();
-        self.push_to_current_target(FormatElement::SoftBreak);
-        self.push_to_current_target(FormatElement::Token(token));
-        self.start_group(Some(SqlContext::CaseStatement(CaseClause::Else)));
-        self.push_to_current_target(FormatElement::Indent);
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::SoftBreak);
+
+        self.group_start(SqlContext::CaseStatement(CaseClause::Else));
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Indent);
+        self.push(FormatElement::Space);
     }
 
     fn handle_end(&mut self, token: Token) {
         self.move_to_case_root();
-        self.push_to_current_target(FormatElement::Dedent);
-        self.push_to_current_target(FormatElement::SoftBreak);
-        self.push_to_current_target(FormatElement::Token(token));
-        self.end_group(); // close CASE root group
-        self.pop_context();
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::Dedent);
+        self.push(FormatElement::SoftBreak);
+        self.push(FormatElement::Token(token));
+        self.group_end();
+        self.push(FormatElement::Space);
     }
 
     fn move_to_case_root(&mut self) {
@@ -535,167 +593,161 @@ impl FormatAstBuilder {
     }
 
     fn handle_with(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Space);
-        self.push_context(SqlContext::WithClause);
+        self.group_start(SqlContext::WithClause);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Space);
     }
 
     fn handle_keyword(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Space);
     }
 
     fn handle_value(&mut self, token: Token) {
         let curr_type = token.token_type.clone();
-        self.push_to_current_target(FormatElement::Token(token));
+        self.push(FormatElement::Token(token));
+
         if let Some(next) = self.peek() {
             match next.token_type {
                 TokenType::Comma | TokenType::Dot => {}
-                TokenType::RightParen | TokenType::LeftParen => {
-                    if curr_type != TokenType::Identifier {
-                        self.push_to_current_target(FormatElement::Space);
+                TokenType::LeftParen => {
+                    if curr_type == TokenType::Identifier {
+                        let p_token = self.advance().unwrap();
+                        self.handle_left_paren(p_token, ParenType::Function);
+                        return;
                     }
+                    self.push(FormatElement::Space);
                 }
                 _ => {
-                    self.push_to_current_target(FormatElement::Space);
+                    self.push(FormatElement::Space);
                 }
             }
         }
     }
 
     fn handle_comma(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::Token(token));
+        self.push(FormatElement::Token(token));
         match self.current_context() {
             SqlContext::WithClause => {
-                self.push_to_current_target(FormatElement::LineGap);
+                self.push(FormatElement::LineGap);
             }
             _ => {
-                self.push_to_current_target(FormatElement::SoftBreak);
+                self.push(FormatElement::SoftBreak);
             }
         }
     }
 
     fn handle_dot(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::Token(token));
+        self.push(FormatElement::Token(token));
     }
 
     fn handle_operator(&mut self, token: Token) {
         match token.value().as_str() {
             "=" | "!=" | "<>" | ">" | ">=" | "<" | "<=" => {
-                self.push_to_current_target(FormatElement::Space);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Space);
+                self.push(FormatElement::Space);
+                self.push(FormatElement::Token(token));
+                self.push(FormatElement::Space);
             }
             _ => {
-                self.push_to_current_target(FormatElement::SoftBreak);
-                self.push_to_current_target(FormatElement::Token(token));
-                self.push_to_current_target(FormatElement::Space);
+                self.push(FormatElement::SoftBreak);
+                self.push(FormatElement::Token(token));
+                self.push(FormatElement::Space);
             }
         }
     }
 
-    fn handle_left_paren(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::Token(token));
-        let peek_type = self.peek_type();
+    fn handle_left_paren(&mut self, token: Token, paren_type: ParenType) {
+        assert!(matches!(token.token_type, TokenType::LeftParen));
 
-        if matches!(peek_type, Some(TokenType::Star)) {
-            let next_t = FormatElement::Token(self.advance().unwrap());
-            self.start_group(Some(SqlContext::Parens));
-            self.push_to_current_target(next_t);
+        if matches!(paren_type, ParenType::CTESubQuery) {
+            self.group_start(SqlContext::Parens(paren_type));
+            self.push(FormatElement::Token(token));
+            self.push(FormatElement::SoftLine);
+            self.push(FormatElement::Indent);
             return;
         }
 
-        let mut context_buff: Vec<SqlContext> = Vec::new();
-        if let Some(SqlContext::WindowOver) = self.context_stack.last() {
-            context_buff.push(self.context_stack.pop().unwrap());
-        }
-        self.start_group(Some(SqlContext::Parens));
-        for element in context_buff.iter() {
-            self.push_context(element.clone());
-        }
+        let peek_type = self.peek_type();
         match peek_type {
+            Some(TokenType::Star) => {
+                let next_t = FormatElement::Token(self.advance().unwrap());
+                self.group_start(SqlContext::Parens(ParenType::Other));
+                self.push(FormatElement::Token(token));
+                self.push(next_t);
+            }
             Some(TokenType::Select) => {
-                self.push_to_current_target(FormatElement::SoftLine);
-                self.push_to_current_target(FormatElement::Indent);
-                self.push_context(SqlContext::SubQuery);
+                self.group_start(SqlContext::Parens(ParenType::SubQuery));
+                self.push(FormatElement::Token(token));
+                self.push(FormatElement::SoftLine);
+                self.push(FormatElement::Indent);
             }
             _ => {
-                self.push_to_current_target(FormatElement::SoftLine);
-                self.push_to_current_target(FormatElement::Indent);
+                self.group_start(SqlContext::Parens(paren_type));
+                self.push(FormatElement::Token(token));
+                self.push(FormatElement::SoftLine);
+                self.push(FormatElement::Indent);
+            }
+        }
+    }
+
+    fn peek_left_paren_ctx(&mut self, paren_type: ParenType) {
+        if let Some(next_token) = self.peek() {
+            if next_token.token_type == TokenType::LeftParen {
+                let t = self.advance().unwrap();
+                self.handle_left_paren(t, paren_type);
             }
         }
     }
 
     fn handle_right_paren(&mut self, token: Token) {
-        self.end_contexts(|ctx| matches!(ctx, SqlContext::Parens), StackPopType::After);
-        self.push_to_current_target(FormatElement::Token(token));
+        self.end_contexts(
+            |ctx| matches!(ctx, SqlContext::Parens(_)),
+            StackPopType::After,
+        );
+        self.push(FormatElement::Token(token));
         if let Some(next_token) = self.peek() {
             if next_token.token_type == TokenType::Comma {
                 return;
             }
         };
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::Space);
     }
 
     fn handle_jinja_template(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Space);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Space);
     }
 
     fn handle_jinja_start(&mut self, token: Token) {
-        self.push_to_current_target(FormatElement::HardBreak);
-        self.start_group(Some(SqlContext::JinjaBlock));
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Indent);
-        self.push_to_current_target(FormatElement::HardBreak);
+        self.group_start(SqlContext::JinjaBlock);
+        self.push(FormatElement::HardBreak);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::Indent);
+        self.push(FormatElement::HardBreak);
     }
 
-    fn handle_jinja_transition(&mut self, token: Token) {
-        // End the current Jinja block
-        self.push_to_current_target(FormatElement::Dedent);
-        self.push_to_current_target(FormatElement::HardBreak);
-        self.end_group();
-
-        // Start the new Jinja block (elif/else)
-        self.start_group(None);
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::Indent);
-        self.push_to_current_target(FormatElement::HardBreak);
-    }
-
-    fn handle_jinja_end(&mut self, token: Token) {
+    fn close_jinja_block(&mut self) {
         // Close any SQL clauses that are still open within the Jinja block
         self.end_contexts(
             |ctx| matches!(ctx, SqlContext::JinjaBlock),
             StackPopType::Before,
         );
-        // while let Some(ctx) = self.context_stack.last() {
-        //     match ctx {
-        //         SqlContext::Root => break,
-        //         SqlContext::JinjaBlock => {
-        //             break;
-        //         }
-        //         SqlContext::SelectBlockClause(_) => {
-        //             self.push_to_current_target(FormatElement::Dedent);
-        //             self.push_to_current_target(FormatElement::SoftBreak);
-        //             self.pop_context();
-        //             self.end_group();
-        //         }
-        //         _ => {
-        //             self.pop_context();
-        //         }
-        //     }
-        // }
-        //
         // Close the current Jinja content with dedent
-        self.push_to_current_target(FormatElement::Dedent);
-        self.pop_context();
-        self.end_group();
+        self.push(FormatElement::Dedent);
+        self.push(FormatElement::HardBreak);
+        self.group_end();
+    }
 
-        // Put the end token on its own line at the same level as the opening tag
-        self.push_to_current_target(FormatElement::HardBreak);
-        self.push_to_current_target(FormatElement::Token(token));
-        self.push_to_current_target(FormatElement::HardBreak);
+    fn handle_jinja_transition(&mut self, token: Token) {
+        self.close_jinja_block();
+        self.handle_jinja_start(token);
+    }
+
+    fn handle_jinja_end(&mut self, token: Token) {
+        self.close_jinja_block();
+        self.push(FormatElement::HardBreak);
+        self.push(FormatElement::Token(token));
+        self.push(FormatElement::HardBreak);
     }
 }
 
@@ -1372,6 +1424,14 @@ mod tests {
             }
             println!("FormatAst for failing test '{}':", test_case.name);
             println!("\n");
+            let mut ast_b =
+                FormatAstBuilder::new(tokenizer_result.tokens.clone(), formatter.dialect.clone());
+            ast_b.format_mode = false;
+            let format_ = ast_b.build();
+            pprint_format_ast(format_.elements(), 0, 0);
+            for token in format_.walk() {
+                println!("{token:?}");
+            }
             let ast_builder =
                 FormatAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
             let format_ast = ast_builder.build();
