@@ -1,7 +1,13 @@
 use crate::dialect::Dialect;
-use crate::tokenizer::{Token, TokenType};
+use crate::tokenizer::{CommentType, Token, TokenType};
 use serde::Deserialize;
 use std::collections::VecDeque;
+
+#[derive(Debug, Clone, PartialEq)]
+enum StackPopType {
+    After,
+    Before,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormatElement {
@@ -194,29 +200,69 @@ impl FormatAstBuilder {
         }
     }
 
-    fn terminate_contexts_for(&mut self, new_context: SqlContext) {
-        if !matches!(new_context, SqlContext::SelectBlockClause(_)) {
-            return;
-        }
-        while let Some(ctx) = self.context_stack.last() {
+    fn end_contexts<F>(&mut self, stop_fn: F, stop_type: StackPopType)
+    where
+        F: Fn(&SqlContext) -> bool,
+    {
+        let mut stopper: Option<StackPopType> = None;
+        while let Some(ctx_) = self.context_stack.last() {
+            let ctx = ctx_.clone();
+            if stop_fn(&ctx) {
+                stopper = Some(stop_type.clone());
+            }
+            if matches!(stopper, Some(StackPopType::Before)) {
+                break;
+            }
             match ctx {
-                SqlContext::SelectBlockClause(_) => {
-                    self.pop_context();
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                    self.end_group();
-                    break;
-                }
+                SqlContext::Root => break,
                 SqlContext::JinjaBlock => {
                     // Don't terminate JinjaBlock contexts - they should complete naturally
                     break;
                 }
-                SqlContext::Root => break,
+                SqlContext::CaseStatement(CaseClause::Then)
+                | SqlContext::CaseStatement(CaseClause::WhenThen)
+                | SqlContext::CaseStatement(CaseClause::When)
+                | SqlContext::CaseStatement(CaseClause::Else) => {
+                    self.push_to_current_target(FormatElement::Dedent);
+                    self.push_to_current_target(FormatElement::SoftBreak);
+                    self.end_group();
+                    self.pop_context();
+                }
+                SqlContext::SelectBlockClause(_) => {
+                    self.push_to_current_target(FormatElement::Dedent);
+                    self.push_to_current_target(FormatElement::SoftBreak);
+                    self.end_group();
+                    self.pop_context();
+                }
+                SqlContext::Parens => {
+                    self.push_to_current_target(FormatElement::Dedent);
+                    self.push_to_current_target(FormatElement::SoftLine);
+                    self.end_group();
+                    self.pop_context();
+                }
                 _ => {
                     self.pop_context();
                 }
             }
+            if matches!(stopper, Some(StackPopType::After)) {
+                break;
+            }
         }
+    }
+
+    fn terminate_contexts_for(&mut self, new_context: SqlContext) {
+        if !matches!(new_context, SqlContext::SelectBlockClause(_)) {
+            return;
+        }
+        self.end_contexts(
+            |ctx| {
+                matches!(
+                    ctx,
+                    SqlContext::SelectBlockClause(_) | SqlContext::JinjaBlock
+                )
+            },
+            StackPopType::After,
+        )
     }
 
     fn start_group(&mut self, ctx: Option<SqlContext>) {
@@ -244,9 +290,7 @@ impl FormatAstBuilder {
     }
 
     fn advance(&mut self) -> Option<Token> {
-        let next_t = self.tokens.pop_front();
-        println!("{:?}", next_t);
-        next_t
+        self.tokens.pop_front()
     }
 
     fn build(mut self) -> FormatAst {
@@ -262,6 +306,7 @@ impl FormatAstBuilder {
                 while !self.group_stack.is_empty() {
                     self.end_group();
                 }
+                self.push_to_current_target(FormatElement::Token(token));
             }
             TokenType::Select => self.handle_select(token),
             TokenType::From => self.handle_from(token),
@@ -483,23 +528,10 @@ impl FormatAstBuilder {
     }
 
     fn move_to_case_root(&mut self) {
-        while let Some(context) = self.context_stack.last() {
-            match context {
-                SqlContext::CaseStatement(CaseClause::Root) => break,
-                SqlContext::CaseStatement(CaseClause::Then)
-                | SqlContext::CaseStatement(CaseClause::WhenThen)
-                | SqlContext::CaseStatement(CaseClause::When)
-                | SqlContext::CaseStatement(CaseClause::Else) => {
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                    self.end_group();
-                    self.pop_context();
-                }
-                _ => {
-                    self.pop_context();
-                }
-            }
-        }
+        self.end_contexts(
+            |ctx| matches!(ctx, SqlContext::CaseStatement(CaseClause::Root)),
+            StackPopType::Before,
+        );
     }
 
     fn handle_with(&mut self, token: Token) {
@@ -595,26 +627,7 @@ impl FormatAstBuilder {
     }
 
     fn handle_right_paren(&mut self, token: Token) {
-        while let Some(context) = self.context_stack.last() {
-            match context {
-                SqlContext::Parens => {
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.push_to_current_target(FormatElement::SoftLine);
-                    self.end_group();
-                    self.pop_context();
-                    break;
-                }
-                SqlContext::SelectBlockClause(_) => {
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.push_to_current_target(FormatElement::SoftBreak);
-                    self.end_group();
-                    self.pop_context();
-                }
-                _other_context => {
-                    self.pop_context();
-                }
-            }
-        }
+        self.end_contexts(|ctx| matches!(ctx, SqlContext::Parens), StackPopType::After);
         self.push_to_current_target(FormatElement::Token(token));
         if let Some(next_token) = self.peek() {
             if next_token.token_type == TokenType::Comma {
@@ -652,25 +665,31 @@ impl FormatAstBuilder {
 
     fn handle_jinja_end(&mut self, token: Token) {
         // Close any SQL clauses that are still open within the Jinja block
-        while let Some(ctx) = self.context_stack.last() {
-            match ctx {
-                SqlContext::JinjaBlock => break,
-                SqlContext::SelectBlockClause(_) => {
-                    self.pop_context();
-                    self.push_to_current_target(FormatElement::Dedent);
-                    self.end_group();
-                }
-                _ => {
-                    self.pop_context();
-                }
-            }
-        }
-
-        // Pop the JinjaBlock context
-        self.pop_context();
-
+        self.end_contexts(
+            |ctx| matches!(ctx, SqlContext::JinjaBlock),
+            StackPopType::Before,
+        );
+        // while let Some(ctx) = self.context_stack.last() {
+        //     match ctx {
+        //         SqlContext::Root => break,
+        //         SqlContext::JinjaBlock => {
+        //             break;
+        //         }
+        //         SqlContext::SelectBlockClause(_) => {
+        //             self.push_to_current_target(FormatElement::Dedent);
+        //             self.push_to_current_target(FormatElement::SoftBreak);
+        //             self.pop_context();
+        //             self.end_group();
+        //         }
+        //         _ => {
+        //             self.pop_context();
+        //         }
+        //     }
+        // }
+        //
         // Close the current Jinja content with dedent
         self.push_to_current_target(FormatElement::Dedent);
+        self.pop_context();
         self.end_group();
 
         // Put the end token on its own line at the same level as the opening tag
@@ -682,15 +701,17 @@ impl FormatAstBuilder {
 
 struct FormatRenderer<'a> {
     settings: &'a FormatSettings,
+    dialect: Dialect,
     ast: FormatAst,
     indent_level: usize,
     column: usize,
 }
 
 impl<'a> FormatRenderer<'a> {
-    fn new(settings: &'a FormatSettings, ast: FormatAst) -> Self {
+    fn new(dialect: Dialect, settings: &'a FormatSettings, ast: FormatAst) -> Self {
         Self {
             settings,
+            dialect,
             ast,
             indent_level: 0,
             column: 0,
@@ -700,27 +721,103 @@ impl<'a> FormatRenderer<'a> {
     fn render(&mut self) -> (String, Vec<FormatElement>) {
         let elements = self.ast.elements().to_vec(); // Clone to avoid borrow checker issues
         let mut flat_format_list: Vec<FormatElement> = Vec::new();
-
-        // First pass: render to get the flat format list
         let mut temp_output = String::new();
         self.render_group(&elements, &mut temp_output, &mut flat_format_list);
-        for el in &flat_format_list {
-            println!("{:?}", el.clone());
-        }
         let final_output = self.normalize_final_format_list(&flat_format_list);
         (final_output, flat_format_list)
     }
 
+    fn line_(
+        &self,
+        output: &mut String,
+        line_str: &mut String,
+        comments: &mut Vec<(bool, Token)>,
+        current_indent: isize,
+    ) {
+        if comments.is_empty() {
+            output.push_str(line_str);
+            line_str.clear();
+            return;
+        };
+
+        let indent_str = if current_indent > 0 {
+            self.make_indent_(current_indent as usize)
+        } else {
+            String::new()
+        };
+        for (is_first, el) in comments.iter() {
+            match (is_first, el.token_type.clone()) {
+                (_, TokenType::Comment(CommentType::DoubleDashLine)) => {
+                    line_str.push_str(&indent_str);
+                    line_str.push_str("-- ");
+                    line_str.push_str(el.value().trim());
+                }
+                (_, TokenType::Comment(CommentType::DoubleDash)) => {
+                    line_str.push_str("  -- ");
+                    line_str.push_str(el.value().trim());
+                }
+                (_, TokenType::Comment(CommentType::MultiLine)) => {
+                    let comment_value = el.value();
+                    let comment_lines: Vec<&str> = comment_value.trim().lines().collect();
+                    if comment_lines.len() == 1 {
+                        line_str.push('\n');
+                        line_str.push_str(&indent_str);
+                        line_str.push_str("/* ");
+                        line_str.push_str(comment_lines[0].trim());
+                        line_str.push_str(" */");
+                        continue;
+                    }
+
+                    line_str.push('\n');
+                    line_str.push_str(&indent_str);
+                    line_str.push_str("/*\n");
+                    for line in comment_lines {
+                        line_str.push_str(&indent_str);
+                        line_str.push_str(&indent_str);
+                        line_str.push_str(line.trim());
+                        line_str.push('\n');
+                    }
+                    line_str.push_str(&indent_str);
+                    line_str.push_str("*/");
+                }
+                _ => {}
+            }
+        }
+        output.push_str(line_str);
+        comments.clear();
+        line_str.clear();
+    }
+
     fn normalize_final_format_list(&self, elements: &[FormatElement]) -> String {
         let mut output = String::new();
+        let mut line_str = String::new();
+        let mut comments: Vec<(bool, Token)> = Vec::new();
         let mut format_vec: Vec<FormatElement> = Vec::new();
         let mut current_indent = 0isize;
+        let mut is_after_newline = true;
         for element in elements {
-            println!(" {:?} ", element.clone());
             match element {
                 FormatElement::Token(token) => {
+                    if !token.comments.is_empty() {
+                        comments.extend(
+                            token
+                                .comments
+                                .clone()
+                                .into_iter()
+                                .map(|c| (is_after_newline, c)),
+                        );
+                    }
+                    is_after_newline = false;
+                    if matches!(token.token_type, TokenType::EOF) {
+                        line_str = line_str.trim_end().to_string();
+                        break;
+                    }
+                    if output.is_empty() && line_str.is_empty() && !comments.is_empty() {
+                        self.line_(&mut output, &mut line_str, &mut comments, current_indent);
+                        output.push('\n')
+                    }
                     if format_vec.is_empty() {
-                        output.push_str(&token.to_string(&Dialect::default()));
+                        line_str.push_str(&token.to_string(&self.dialect));
                         continue;
                     }
                     let (indent_change, resolved_el) = self.normalize_format_sequence(&format_vec);
@@ -728,40 +825,54 @@ impl<'a> FormatRenderer<'a> {
                     if current_indent < 0 {
                         current_indent = 0
                     }
-                    println!(
-                        "{current_indent} {indent_change} {:?} ",
-                        resolved_el.clone()
-                    );
                     format_vec.clear();
                     if let Some(resolved) = resolved_el {
                         match resolved {
-                            FormatElement::Space => output.push(' '),
+                            FormatElement::Space => line_str.push(' '),
                             FormatElement::HardBreak => {
-                                output.push('\n');
+                                self.line_(
+                                    &mut output,
+                                    &mut line_str,
+                                    &mut comments,
+                                    current_indent,
+                                );
+                                line_str.push('\n');
                                 // Apply indentation if we have any
                                 if current_indent > 0 {
                                     let indent_str = self.make_indent_(current_indent as usize);
-                                    output.push_str(&indent_str);
+                                    line_str.push_str(&indent_str);
                                 }
                             }
                             FormatElement::LineGap => {
-                                output.push_str("\n\n");
+                                self.line_(
+                                    &mut output,
+                                    &mut line_str,
+                                    &mut comments,
+                                    current_indent,
+                                );
+                                line_str.push_str("\n\n");
                                 // Apply indentation if we have any
                                 if current_indent > 0 {
                                     let indent_str = self.make_indent_(current_indent as usize);
-                                    output.push_str(&indent_str);
+                                    line_str.push_str(&indent_str);
                                 }
                             }
                             _ => {}
                         }
                     }
-                    output.push_str(&token.to_string(&Dialect::default()));
+                    line_str.push_str(&token.to_string(&self.dialect));
+                }
+                FormatElement::HardBreak => {
+                    format_vec.push(element.clone());
+                    is_after_newline = true;
                 }
                 _ => {
                     format_vec.push(element.clone());
                 }
             }
         }
+
+        self.line_(&mut output, &mut line_str, &mut comments, current_indent);
         output
     }
 
@@ -844,7 +955,7 @@ impl<'a> FormatRenderer<'a> {
             self.column += indent_str.len();
         }
 
-        let text = token.to_string(&Dialect::default());
+        let text = token.to_string(&self.dialect);
         output.push_str(&text);
         self.column += text.len();
     }
@@ -920,7 +1031,7 @@ impl<'a> FormatRenderer<'a> {
                     }
                 }
                 FormatElement::Token(token) => {
-                    flat_output.push_str(&token.to_string(&Dialect::default()));
+                    flat_output.push_str(&token.to_string(&self.dialect));
                     flat_format_list.push(element.clone());
                 }
                 format_el => {
@@ -1115,27 +1226,13 @@ impl Formatter {
         Self { settings, dialect }
     }
 
-    pub fn format_tokens(&self, tokens: &[Token]) -> Result<String, FormatterError> {
-        // Phase 1: Build FormatAst from tokens
-        let ast_builder = FormatAstBuilder::new(tokens.to_vec(), self.dialect.clone());
-        let format_ast = ast_builder.build();
-
-        // Phase 2: Render FormatAst to String
-        let mut renderer = FormatRenderer::new(&self.settings, format_ast);
-        let (output, _flat_elements) = renderer.render();
-        Ok(output)
-    }
-
-    pub fn format_tokens_with_elements(
+    pub fn format_tokens(
         &self,
         tokens: &[Token],
     ) -> Result<(String, Vec<FormatElement>), FormatterError> {
-        // Phase 1: Build FormatAst from tokens
         let ast_builder = FormatAstBuilder::new(tokens.to_vec(), self.dialect.clone());
         let format_ast = ast_builder.build();
-
-        // Phase 2: Render FormatAst to String and flattened elements
-        let mut renderer = FormatRenderer::new(&self.settings, format_ast);
+        let mut renderer = FormatRenderer::new(self.dialect.clone(), &self.settings, format_ast);
         Ok(renderer.render())
     }
 }
@@ -1262,7 +1359,7 @@ mod tests {
             let formatter = Formatter::new(format_settings);
 
             // Format tokens
-            let actual_output = formatter
+            let (actual_output, format_elements) = formatter
                 .format_tokens(&tokenizer_result.tokens)
                 .expect("Formatting should succeed");
 
@@ -1270,62 +1367,21 @@ mod tests {
             let expected = test_case.expected.trim();
             let actual = actual_output.trim();
 
-            if expected != actual {
-                println!("FormatAst for failing test '{}':", test_case.name);
-                let ast_builder =
-                    FormatAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
-                let format_ast = ast_builder.build();
-                pprint_format_ast(format_ast.elements(), 0, 0);
-                let diff_output = create_visual_diff(expected, &actual);
-                panic!(
-                    "Formatter test '{}' failed:\n{}",
-                    test_case.name, diff_output
-                );
+            if expected == actual {
+                continue;
             }
-        }
-    }
-
-    #[test]
-    fn test_group_by_only() {
-        let test_file_path = "test/fixtures/formatter/basic.yml";
-        let test_file = load_formatter_test_file(test_file_path);
-
-        // Find just the group_by_multiple_columns test
-        let test_case = test_file
-            .file
-            .iter()
-            .find(|tc| tc.name == "group_by_multiple_columns")
-            .expect("group_by_multiple_columns test not found");
-
-        // Tokenize input
-        let mut tokenizer = Tokenizer::new(&test_case.input);
-        let tokenizer_result = tokenizer.tokenize().expect("Tokenization should succeed");
-
-        // Create formatter with settings
-        let format_settings = test_case
-            .settings
-            .as_ref()
-            .map(FormatSettings::from)
-            .unwrap_or_default();
-
-        let formatter = Formatter::new(format_settings);
-
-        // Format tokens
-        let actual_output = formatter
-            .format_tokens(&tokenizer_result.tokens)
-            .expect("Formatting should succeed");
-
-        // Compare with expected (trim trailing whitespace for comparison)
-        let expected = test_case.expected.trim();
-        let actual = actual_output.trim();
-
-        if expected != actual {
             println!("FormatAst for failing test '{}':", test_case.name);
+            println!("\n");
             let ast_builder =
                 FormatAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
             let format_ast = ast_builder.build();
             pprint_format_ast(format_ast.elements(), 0, 0);
-            let diff_output = create_visual_diff(expected, actual);
+            println!("\n");
+            for element in format_elements {
+                println!("{element:?}");
+            }
+            println!("\n");
+            let diff_output = create_visual_diff(expected, &actual);
             panic!(
                 "Formatter test '{}' failed:\n{}",
                 test_case.name, diff_output
@@ -1351,5 +1407,10 @@ mod tests {
     #[test]
     fn test_universal_groups() {
         run_formatter_tests("test/fixtures/formatter/universal_groups.yml");
+    }
+
+    #[test]
+    fn test_comments_formatting() {
+        run_formatter_tests("test/fixtures/formatter/comments.yml");
     }
 }

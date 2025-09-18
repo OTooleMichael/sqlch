@@ -80,7 +80,7 @@ file:
       {% else %}
       , name
       {% endif %}
-      FROM users -- hello
+      FROM users
       LEFT JOIN {{ ref('my_table') }} USING(id)
     settings:
       indent:

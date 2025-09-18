@@ -481,34 +481,6 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
-    fn close_optional_pair(
-        &mut self,
-        token: &Token,
-        expected_type: TokenType,
-        _expected_desc: &str,
-        token_i: usize,
-    ) -> Result<(), TokenizerError> {
-        if let Some(opening_pair) = self.pair_stack.last() {
-            if opening_pair.token_type == expected_type {
-                let opening_pair = self.pair_stack.pop().unwrap();
-                let open_token = &mut self.tokens[opening_pair.loc];
-                let token_with_pair = Token {
-                    pair: Some(opening_pair.clone()),
-                    ..token.clone()
-                };
-                open_token.pair = Some(TokenPair {
-                    token_type: token.token_type.clone(),
-                    loc: token_i,
-                });
-                self.tokens.push(token_with_pair);
-                return Ok(());
-            }
-        }
-        // If no matching pair on stack, just add the token normally
-        self.tokens.push(token.clone());
-        Ok(())
-    }
-
     fn close_and_reopen_chain(
         &mut self,
         token: &Token,
@@ -596,7 +568,15 @@ impl<'a> Tokenizer<'a> {
         while self.current_pos.is_some() {
             let is_newline = self.is_newline;
             let char_ = self.current_char();
-            self.is_newline = Some('\n') == char_;
+            match char_ {
+                Some('\n') => {
+                    self.is_newline = true;
+                }
+                Some(c) if c.is_whitespace() => {}
+                _ => {
+                    self.is_newline = false;
+                }
+            }
             match char_ {
                 Some('{') if self.peek() == Some('{') => {
                     let token = self.tokenize_template_variable()?;

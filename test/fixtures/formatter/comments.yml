@@ -1,0 +1,86 @@
+file:
+  - name: single_line_comment_at_end
+    input: "SELECT col1 FROM table1 -- end comment"
+    expected: |
+      SELECT
+        col1
+      FROM table1  -- end comment
+  - name: single_line_comment_at_start_of_line
+    input: |
+      -- start comment
+      SELECT col1 FROM table1
+    expected: |
+      -- start comment
+      SELECT
+        col1
+      FROM table1
+  - name: multiline_comment_before_select
+    input: |
+      /* multiline comment */
+      SELECT col1 FROM table1
+    expected: |
+      /* multiline comment */
+      SELECT
+        col1
+      FROM table1
+  - name: double_dash_line_comment
+    input: |
+      -- line comment
+      SELECT col1 FROM table1
+    expected: |
+      -- line comment
+      SELECT
+        col1
+      FROM table1
+  
+  - name: comment_on_first_token_case
+    input: "SELECT /* first token comment */ col1 FROM table1"
+    expected: |
+      SELECT
+        /* first token comment */
+        col1
+      FROM table1
+  - name: comment_mixed_types
+    input: |
+      /* block comment */
+      SELECT col1, -- inline comment
+             col2
+      FROM table1 -- table comment
+    expected: |
+      /* block comment */
+      SELECT
+        col1,  -- inline comment
+        col2
+      FROM table1  -- table comment
+  - name: comment_mixed_types
+    input: |
+      SELECT col1,
+      /* 
+      block comment
+        I enjoy many lines
+      */
+             col2
+      FROM table1
+    expected: |
+      SELECT
+        col1,
+        /*
+          block comment
+          I enjoy many lines
+        */
+        col2
+      FROM table1
+  - name: comment_on_where_clause
+    input: "SELECT col1 FROM table1 WHERE -- condition comment\n col1 = 'value'"
+    expected: |
+      SELECT
+        col1
+      FROM table1
+      WHERE col1 = 'value'  -- condition comment
+  - name: comment_on_where_clause2
+    input: "SELECT col1 FROM table1 -- condition comment\nWHERE\n col1 = 'value'"
+    expected: |
+      SELECT
+        col1
+      FROM table1  -- condition comment
+      WHERE col1 = 'value'
