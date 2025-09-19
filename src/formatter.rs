@@ -1,7 +1,9 @@
 use crate::dialect::Dialect;
+use crate::loose_parser::{
+    CaseClause, LooseAst, LooseAstBuilder, LooseAstElement, SqlClause, SqlContext,
+};
 use crate::tokenizer::{CommentType, Token, TokenType};
 use serde::Deserialize;
-use std::collections::VecDeque;
 use std::slice;
 
 // Depth-first iterator over FormatAst
@@ -40,12 +42,6 @@ impl<'a> Iterator for WalkIter<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum StackPopType {
-    After,
-    Before,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     pub context: SqlContext,
     pub elements: Vec<FormatElement>,
@@ -64,33 +60,6 @@ pub enum FormatElement {
     Indent,
     Dedent,
     Group(Group), // Universal grouping - any () creates a group
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct LooseGroup {
-    pub context: SqlContext,
-    pub elements: Vec<LooseAstElement>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum LooseAstElement {
-    Token(Token),
-    Group(LooseGroup),
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LooseAst {
-    elements: Vec<LooseAstElement>,
-}
-
-impl LooseAst {
-    pub fn push(&mut self, element: LooseAstElement) {
-        self.elements.push(element);
-    }
-
-    pub fn elements(&self) -> &[LooseAstElement] {
-        &self.elements
-    }
 }
 
 impl FormatElement {
@@ -188,533 +157,45 @@ impl From<&TestSettings> for FormatSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum CaseClause {
-    Root,
-    WhenThen,
-    When,
-    Then,
-    Else,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParenType {
-    WindowOver,
-    SubQuery,
-    CTESubQuery,
-    Function,
-    DataType,
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SqlClause {
-    SelectFields,
-    From,
-    Join,
-    Where,
-    GroupBy,
-    Having,
-    Qualify,
-    OrderBy,
-    Limit,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SqlContext {
-    Root,
-    SelectBlockClause(SqlClause),
-    CaseStatement(CaseClause),
-    WithClause,
-    Parens(ParenType),
-    JinjaBlock,
-}
-
-struct LooseAstBuilder {
-    tokens: VecDeque<Token>,
-    ast: FormatAst,
-    group_stack: Vec<(SqlContext, Vec<FormatElement>)>,
-}
-
-impl LooseAstBuilder {
-    fn new(tokens: Vec<Token>, _dialect: Dialect) -> Self {
-        let token_queue = VecDeque::from(tokens);
-
-        Self {
-            tokens: token_queue,
-            ast: FormatAst::default(),
-            group_stack: Vec::new(),
-        }
-    }
-
-    fn current_context(&self) -> SqlContext {
-        self.group_stack
-            .last()
-            .map(|(ctx, _)| ctx.clone())
-            .unwrap_or(SqlContext::Root)
-    }
-
-    fn context_contains(&self, ctx: SqlContext, max_look_back: usize) -> bool {
-        for (i, (element, _)) in self.group_stack.iter().rev().enumerate() {
-            if i > max_look_back {
-                return false;
-            }
-            if std::mem::discriminant(element) == std::mem::discriminant(&ctx) {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn end_contexts<F>(&mut self, stop_fn: F, stop_type: StackPopType)
-    where
-        F: Fn(&SqlContext) -> bool,
-    {
-        let mut stopper: Option<StackPopType> = None;
-        while let Some((ctx, _)) = self.group_stack.last() {
-            if stop_fn(ctx) {
-                stopper = Some(stop_type.clone());
-            }
-            if matches!(stopper, Some(StackPopType::Before)) {
-                break;
-            }
-            match ctx {
-                SqlContext::Root => break,
-                SqlContext::JinjaBlock => {
-                    // Don't terminate JinjaBlock contexts - they should complete naturally
-                    break;
-                }
-                SqlContext::CaseStatement(CaseClause::Then)
-                | SqlContext::CaseStatement(CaseClause::WhenThen)
-                | SqlContext::CaseStatement(CaseClause::When)
-                | SqlContext::CaseStatement(CaseClause::Else) => {
-                    self.group_end();
-                }
-                SqlContext::SelectBlockClause(_) => {
-                    self.group_end();
-                }
-                SqlContext::Parens(_) => {
-                    self.group_end();
-                }
-                _ => {
-                    self.group_end();
-                }
-            }
-            if matches!(stopper, Some(StackPopType::After)) {
-                break;
-            }
-        }
-    }
-
-    fn terminate_contexts_for(&mut self, new_context: SqlContext) {
-        if !matches!(new_context, SqlContext::SelectBlockClause(_)) {
-            return;
-        }
-        self.end_contexts(
-            |ctx| {
-                matches!(
-                    ctx,
-                    SqlContext::SelectBlockClause(_) | SqlContext::JinjaBlock
-                )
-            },
-            StackPopType::After,
-        )
-    }
-
-    fn group_start(&mut self, ctx: SqlContext) {
-        self.group_stack.push((ctx, Vec::new()));
-    }
-
-    fn group_end(&mut self) {
-        let (context, latest_group_elements) = self
-            .group_stack
-            .pop()
-            .unwrap_or((SqlContext::Root, Vec::new()));
-        let group = Group {
-            context,
-            elements: latest_group_elements,
-        };
-        self.push(FormatElement::Group(group));
-    }
-
-    fn push(&mut self, element: FormatElement) {
-        if !matches!(element, FormatElement::Token(_) | FormatElement::Group(_)) {
-            panic!("Bad path we need to refactor out push for other format elements");
-        }
-        if let Some((_, current_group)) = self.group_stack.last_mut() {
-            current_group.push(element);
-        } else {
-            self.ast.push(element);
-        }
-    }
-
-    fn peek(&self) -> Option<&Token> {
-        self.tokens.front()
-    }
-
-    fn advance(&mut self) -> Option<Token> {
-        self.tokens.pop_front()
-    }
-
-    fn build(mut self) -> FormatAst {
-        while let Some(token) = self.advance() {
-            self.process_token(token);
-        }
-        self.ast
-    }
-
-    fn process_token(&mut self, token: Token) {
-        match &token.token_type {
-            TokenType::EOF => {
-                while !self.group_stack.is_empty() {
-                    self.group_end();
-                }
-                self.push(FormatElement::Token(token));
-            }
-            TokenType::Select => self.handle_select(token),
-            TokenType::From => self.handle_from(token),
-            TokenType::Where
-            | TokenType::Having
-            | TokenType::Qualify
-            | TokenType::GroupBy
-            | TokenType::Limit => {
-                let token_type = token.token_type.clone();
-                self.handle_whereish(token, &token_type);
-            }
-            TokenType::OrderBy => {
-                if self.context_contains(SqlContext::Parens(ParenType::WindowOver), 4) {
-                    self.push(FormatElement::Token(token));
-
-                    return;
-                }
-                let token_type = token.token_type.clone();
-                self.handle_whereish(token, &token_type);
-            }
-            TokenType::Over => {
-                self.push(FormatElement::Token(token));
-
-                self.peek_left_paren_ctx(ParenType::WindowOver);
-            }
-            TokenType::As => {
-                self.handle_keyword(token);
-                if !matches!(self.current_context(), SqlContext::WithClause) {
-                    return;
-                }
-                self.peek_left_paren_ctx(ParenType::CTESubQuery);
-            }
-            TokenType::Varchar | TokenType::Decimal => {
-                self.push(FormatElement::Token(token));
-                self.peek_left_paren_ctx(ParenType::DataType);
-            }
-            TokenType::Keyword | TokenType::In => self.handle_keyword(token),
-            TokenType::PartitionBy => self.handle_partition_by(token),
-            TokenType::Case => self.handle_case(token),
-            TokenType::When => self.handle_when(token),
-            TokenType::Then => self.handle_then(token),
-            TokenType::Else => self.handle_else(token),
-            TokenType::End => self.handle_end(token),
-            TokenType::With => self.handle_with(token),
-            TokenType::InnerJoin
-            | TokenType::LeftJoin
-            | TokenType::RightJoin
-            | TokenType::FullJoin
-            | TokenType::LeftOuterJoin
-            | TokenType::RightOuterJoin
-            | TokenType::FullOuterJoin
-            | TokenType::CrossJoin
-            | TokenType::NaturalJoin
-            | TokenType::Join => self.handle_join(token),
-            TokenType::Identifier | TokenType::Number | TokenType::StringLiteral => {
-                self.handle_value(token)
-            }
-            TokenType::Comma => self.handle_comma(token),
-            TokenType::Dot => self.handle_dot(token),
-            TokenType::LeftParen => self.handle_left_paren(token, ParenType::Other),
-            TokenType::RightParen => self.handle_right_paren(token),
-            TokenType::JinjaIf | TokenType::JinjaFor => {
-                self.handle_jinja_start(token);
-            }
-            TokenType::JinjaElif | TokenType::JinjaElse => {
-                self.handle_jinja_transition(token);
-            }
-            TokenType::JinjaEndif | TokenType::JinjaEndfor => {
-                self.handle_jinja_end(token);
-            }
-            TokenType::TemplateVariable | TokenType::TemplateBlock => {
-                self.handle_jinja_template(token)
-            }
-            TokenType::Operator => self.handle_operator(token),
-            TokenType::Star => {
-                if matches!(self.peek_type(), Some(TokenType::RightParen)) {
-                    self.push(FormatElement::Token(token));
-                    return;
-                }
-
-                self.push(FormatElement::Token(token));
-            }
-            TokenType::And | TokenType::Or => {
-                self.push(FormatElement::Token(token));
-            }
-            _ => {
-                if let Some(next_token) = self.peek() {
-                    match next_token.token_type {
-                        TokenType::LeftParen => {
-                            // Function call - we'll let left paren handling take care of grouping
-                            self.push(FormatElement::Token(token));
-                        }
-                        _ => {
-                            self.push(FormatElement::Token(token));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn peek_type(&self) -> Option<TokenType> {
-        if let Some(next_token) = self.peek() {
-            return Some(next_token.token_type.clone());
-        }
-        None
-    }
-
-    fn handle_select(&mut self, token: Token) {
-        if matches!(self.current_context(), SqlContext::WithClause) {
-            self.group_end();
-        }
-        self.group_start(SqlContext::SelectBlockClause(SqlClause::SelectFields));
-        self.push(FormatElement::Token(token));
-        if let Some(next_token) = self.peek() {
-            if matches!(next_token.token_type, TokenType::Keyword)
-                && next_token.value().to_uppercase() == "DISTINCT"
-            {
-                let distinct = self.advance().unwrap();
-                self.push(FormatElement::Token(distinct));
-            }
-        }
-    }
-
-    fn handle_from(&mut self, token: Token) {
-        let ctx = SqlContext::SelectBlockClause(SqlClause::From);
-        self.terminate_contexts_for(ctx.clone());
-        self.group_start(ctx);
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_join(&mut self, token: Token) {
-        let ctx = SqlContext::SelectBlockClause(SqlClause::Join);
-        self.terminate_contexts_for(ctx.clone());
-
-        self.group_start(ctx);
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_whereish(&mut self, token: Token, trigger: &TokenType) {
-        let cls = match trigger {
-            TokenType::Where => SqlClause::Where,
-            TokenType::Having => SqlClause::Having,
-            TokenType::Qualify => SqlClause::Qualify,
-            TokenType::GroupBy => SqlClause::GroupBy,
-            TokenType::OrderBy => SqlClause::OrderBy,
-            TokenType::Limit => SqlClause::Limit,
-            _ => return, // Handle unexpected token types gracefully
-        };
-        let ctx = SqlContext::SelectBlockClause(cls);
-        self.terminate_contexts_for(ctx.clone());
-
-        self.group_start(ctx);
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_partition_by(&mut self, token: Token) {
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_case(&mut self, token: Token) {
-        self.group_start(SqlContext::CaseStatement(CaseClause::Root));
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_when(&mut self, token: Token) {
-        self.move_to_case_root();
-
-        self.group_start(SqlContext::CaseStatement(CaseClause::WhenThen));
-
-        self.group_start(SqlContext::CaseStatement(CaseClause::When));
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_then(&mut self, token: Token) {
-        self.group_end();
-
-        self.group_start(SqlContext::CaseStatement(CaseClause::Then));
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_else(&mut self, token: Token) {
-        self.move_to_case_root();
-
-        self.group_start(SqlContext::CaseStatement(CaseClause::Else));
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_end(&mut self, token: Token) {
-        self.move_to_case_root();
-
-        self.push(FormatElement::Token(token));
-        self.group_end();
-    }
-
-    fn move_to_case_root(&mut self) {
-        self.end_contexts(
-            |ctx| matches!(ctx, SqlContext::CaseStatement(CaseClause::Root)),
-            StackPopType::Before,
-        );
-    }
-
-    fn handle_with(&mut self, token: Token) {
-        self.group_start(SqlContext::WithClause);
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_keyword(&mut self, token: Token) {
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_value(&mut self, token: Token) {
-        let curr_type = token.token_type.clone();
-        self.push(FormatElement::Token(token));
-        if let Some(next) = self.peek() {
-            match next.token_type {
-                TokenType::LeftParen => {
-                    if curr_type == TokenType::Identifier {
-                        let p_token = self.advance().unwrap();
-                        self.handle_left_paren(p_token, ParenType::Function);
-                    }
-                }
-                TokenType::Comma | TokenType::Dot => {}
-                _ => {}
-            }
-        }
-    }
-
-    fn handle_comma(&mut self, token: Token) {
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_dot(&mut self, token: Token) {
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_operator(&mut self, token: Token) {
-        match token.value().as_str() {
-            "=" | "!=" | "<>" | ">" | ">=" | "<" | "<=" => {
-                self.push(FormatElement::Token(token));
-            }
-            _ => {
-                self.push(FormatElement::Token(token));
-            }
-        }
-    }
-
-    fn handle_left_paren(&mut self, token: Token, paren_type: ParenType) {
-        assert!(matches!(token.token_type, TokenType::LeftParen));
-
-        if matches!(paren_type, ParenType::CTESubQuery) {
-            self.group_start(SqlContext::Parens(paren_type));
-            self.push(FormatElement::Token(token));
-
-            return;
-        }
-
-        let peek_type = self.peek_type();
-        match peek_type {
-            Some(TokenType::Star) => {
-                let next_t = FormatElement::Token(self.advance().unwrap());
-                self.group_start(SqlContext::Parens(ParenType::Other));
-                self.push(FormatElement::Token(token));
-                self.push(next_t);
-            }
-            Some(TokenType::Select) => {
-                self.group_start(SqlContext::Parens(ParenType::SubQuery));
-                self.push(FormatElement::Token(token));
-            }
-            _ => {
-                self.group_start(SqlContext::Parens(paren_type));
-                self.push(FormatElement::Token(token));
-            }
-        }
-    }
-
-    fn peek_left_paren_ctx(&mut self, paren_type: ParenType) {
-        if let Some(next_token) = self.peek() {
-            if next_token.token_type == TokenType::LeftParen {
-                let t = self.advance().unwrap();
-                self.handle_left_paren(t, paren_type);
-            }
-        }
-    }
-
-    fn handle_right_paren(&mut self, token: Token) {
-        self.end_contexts(
-            |ctx| matches!(ctx, SqlContext::Parens(_)),
-            StackPopType::Before,
-        );
-
-        self.push(FormatElement::Token(token));
-        self.group_end();
-    }
-
-    fn handle_jinja_template(&mut self, token: Token) {
-        self.push(FormatElement::Token(token));
-    }
-
-    fn handle_jinja_start(&mut self, token: Token) {
-        self.group_start(SqlContext::JinjaBlock);
-        self.push(FormatElement::Token(token));
-    }
-
-    fn close_jinja_block(&mut self) {
-        // Close any SQL clauses that are still open within the Jinja block
-        self.end_contexts(
-            |ctx| matches!(ctx, SqlContext::JinjaBlock),
-            StackPopType::Before,
-        );
-        // Close the current Jinja content with dedent
-
-        self.group_end();
-    }
-
-    fn handle_jinja_transition(&mut self, token: Token) {
-        self.close_jinja_block();
-        self.handle_jinja_start(token);
-    }
-
-    fn handle_jinja_end(&mut self, token: Token) {
-        self.close_jinja_block();
-        self.push(FormatElement::Token(token));
-    }
-}
-
 struct FormatAstBuilder;
+
+fn convert_loose_to_format_elements(element: &LooseAstElement) -> FormatElement {
+    match element {
+        LooseAstElement::Token(token) => FormatElement::Token(token.clone()),
+        LooseAstElement::Group(loose_group) => {
+            let elements: Vec<FormatElement> = loose_group
+                .elements
+                .iter()
+                .map(convert_loose_to_format_elements)
+                .collect();
+            let converted_group = Group {
+                context: loose_group.context.clone(),
+                elements,
+            };
+            FormatElement::Group(converted_group)
+        }
+    }
+}
 
 impl FormatAstBuilder {
     fn new(_dialect: Dialect) -> Self {
         Self
     }
 
-    fn inject_format_elements(&self, structural_ast: FormatAst) -> FormatAst {
+    fn inject_format_elements(&self, structural_ast: LooseAst) -> FormatAst {
         let mut result = FormatAst::default();
-        let group = Group {
-            context: SqlContext::Root,
-            elements: structural_ast.elements.clone(),
-        };
-        let mut context_stack = vec![group.context.clone()];
-        let new_group = self.process_group(&group, &mut context_stack);
-        for el in new_group {
-            result.push(el)
+        let group = convert_loose_to_format_elements(&structural_ast.element.unwrap());
+        match group {
+            FormatElement::Group(group) => {
+                let mut context_stack = vec![group.context.clone()];
+                let new_group = self.process_group(&group, &mut context_stack);
+                for el in new_group {
+                    result.push(el)
+                }
+                result
+            }
+            _ => panic!("Not reachable"),
         }
-        result
     }
 
     fn process_token(
@@ -1720,7 +1201,8 @@ pub fn format_tokens(
     tokens: &[Token],
 ) -> Result<(String, Vec<FormatElement>), FormatterError> {
     let ast_builder = LooseAstBuilder::new(tokens.to_vec(), dialect.clone());
-    let format_ast = ast_builder.build();
+    let loose_ast = ast_builder.build();
+    let format_ast = FormatAstBuilder::new(dialect.clone()).inject_format_elements(loose_ast);
     let mut renderer = FormatRenderer::new(dialect.clone(), settings, format_ast);
     Ok(renderer.render())
 }
@@ -1777,32 +1259,31 @@ mod tests {
         serde_yaml::from_str(&content).expect("Failed to parse formatter YAML")
     }
 
-    fn pprint_format_ast(elements: &[FormatElement], indent: usize, item: usize) {
-        for (i, element) in elements.iter().enumerate() {
-            let index = i + item;
-            let indent_value = " ".repeat(indent * 4);
-            match element {
-                FormatElement::Token(token) => {
-                    if let Some(str_) = &token.value {
-                        let value = str_.to_owned();
-                        let t_ = &token.token_type;
-                        println!("{indent_value}[{index}] {value:?} {t_:?}");
-                    } else {
-                        let value = token.value();
-                        println!("{indent_value}[{index}] {value:?}");
-                    };
+    fn pprint_loose_ast(element: &LooseAstElement, indent: usize, item: usize) {
+        match element {
+            LooseAstElement::Token(token) => {
+                let index = item;
+                let indent_value = " ".repeat(indent * 4);
+                if let Some(str_) = &token.value {
+                    let value = str_.to_owned();
+                    let t_ = &token.token_type;
+                    println!("{indent_value}[{index}] {value:?} {t_:?}");
+                } else {
+                    let value = token.value();
+                    println!("{indent_value}[{index}] {value:?}");
+                };
+            }
+            LooseAstElement::Group(group) => {
+                let size_ = group.elements.len();
+                let ctx = &group.context;
+                if size_ == 0 {
+                    return;
                 }
-                FormatElement::Group(group) => {
-                    let size_ = group.elements.len();
-                    let ctx = &group.context;
-                    if size_ == 0 {
-                        continue;
-                    }
+                for (i, element) in group.elements.iter().enumerate() {
+                    let index = i + item;
+                    let indent_value = " ".repeat(indent * 4);
                     println!("{indent_value}[{index}] - {ctx:?}  G{size_} -");
-                    pprint_format_ast(&group.elements, indent + 1, index);
-                }
-                _ => {
-                    println!("{indent_value}[{index}] {element:?}");
+                    pprint_loose_ast(&element, indent + 1, index);
                 }
             }
         }
@@ -1889,9 +1370,8 @@ mod tests {
             println!("\n");
             let ast_builder =
                 LooseAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
-            let format_ast = ast_builder.build();
-            pprint_format_ast(format_ast.elements(), 0, 0);
-
+            let loose_ast = ast_builder.build();
+            pprint_loose_ast(&loose_ast.element.unwrap(), 0, 0);
             println!("FormatAst for failing test '{}':", test_case.name);
             println!("\n");
             for element in format_elements {
