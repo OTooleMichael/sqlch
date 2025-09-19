@@ -1,0 +1,25 @@
+file:
+  - name: short_group_by
+    input: |
+      SELECT
+        EXTRACT(hour FROM lemon) AS n,
+        COUNT(*)
+      FROM employees
+      GROUP BY department
+      WHERE date BETWEEN '2025-01-01'
+          AND CURRENT_DATE
+        AND piano
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 40
+    expected: |
+      SELECT
+        EXTRACT(hour FROM lemon) AS n,
+        COUNT(*)
+      FROM employees
+      GROUP BY department
+      WHERE date BETWEEN '2025-01-01'
+          AND CURRENT_DATE
+        AND piano

@@ -1,8 +1,7 @@
 file:
-  # Short vs Long GROUP BY clauses
   - name: short_group_by
     input: |
-      SELECT department, COUNT(*) FROM employees GROUP BY department
+      SELECT department::VARCHAR, COUNT(*) FROM employees GROUP BY department
     settings:
       indent:
         style: "spaces"
@@ -10,7 +9,7 @@ file:
       line_width: 40
     expected: |
       SELECT
-        department,
+        department::VARCHAR,
         COUNT(*)
       FROM employees
       GROUP BY department

@@ -1,0 +1,84 @@
+file:
+  - name: basic_select
+    sql: "SELECT * FROM users"
+    ast:
+      context: Root
+      elements:
+      - context: Stmt
+        elements:
+        - context: SelectBlockClause(SelectFields)
+          elements:
+            - type: Token
+              token_type: Select
+            - type: Token
+              token_type: "*"
+        - context: SelectBlockClause(From)
+          elements:
+            - type: Token
+              token_type: From
+            - type: Token
+              token_type: Identifier
+              value: "users"
+      - type: Token
+        token_type: EOF
+
+  - name: longer_select
+    sql: "SELECT id, name FROM users WHERE active = 1; SELECT piano"
+    ast:
+      context: Root
+      elements:
+      - context: Stmt
+        elements:
+          - context: SelectBlockClause(SelectFields)
+          - context: SelectBlockClause(From)
+          - context: SelectBlockClause(Where)
+      - type: Token
+        token_type: SemiColon
+      - context: Stmt
+        elements:
+          - context: SelectBlockClause(SelectFields)
+      - type: Token
+        token_type: EOF
+
+  - name: with_subquery
+    sql: "SELECT * FROM (SELECT id FROM users) sub"
+    ast:
+      context: Root
+      elements:
+      - context: Stmt
+        elements:
+          - context: SelectBlockClause(SelectFields)
+            elements:
+              - type: Token
+                token_type: Select
+              - type: Token
+                token_type: "*"
+          - context: SelectBlockClause(From)
+            elements:
+              - type: Token
+                token_type: From
+              - context: Parens(SubQuery)
+                elements:
+                  - type: Token
+                    token_type: LeftParen
+                  - context: SelectBlockClause(SelectFields)
+                    elements:
+                      - type: Token
+                        token_type: Select
+                      - type: Token
+                        token_type: Identifier
+                        value: "id"
+                  - context: SelectBlockClause(From)
+                    elements:
+                      - type: Token
+                        token_type: From
+                      - type: Token
+                        token_type: Identifier
+                        value: "users"
+                  - type: Token
+                    token_type: RightParen
+              - type: Token
+                token_type: Identifier
+                value: "sub"
+      - type: Token
+        token_type: EOF

@@ -1,0 +1,114 @@
+file:
+  - name: simple_case
+    sql: "SELECT CASE WHEN x = 1 THEN 'one' ELSE 'other' END FROM table"
+    ast:
+      context: Root
+      elements:
+        - context: Stmt
+          elements:
+            - context: SelectBlockClause(SelectFields)
+              elements:
+                - type: Token
+                  token_type: Select
+                - context: CaseStatement(Root)
+                  elements:
+                    - type: Token
+                      token_type: Case
+                    - context: CaseStatement(WhenThen)
+                      elements:
+                        - context: CaseStatement(When)
+                          elements:
+                            - type: Token
+                              token_type: When
+                            - type: Token
+                              token_type: Identifier
+                              value: "x"
+                            - type: Token
+                              token_type: Operator
+                              value: "="
+                            - type: Token
+                              token_type: Number
+                              value: "1"
+                        - context: CaseStatement(Then)
+                          elements:
+                            - type: Token
+                              token_type: Then
+                            - type: Token
+                              token_type: StringLiteral
+                              value: "one"
+                    - context: CaseStatement(Else)
+                      elements:
+                        - type: Token
+                          token_type: Else
+                        - type: Token
+                          token_type: StringLiteral
+                          value: "other"
+                    - type: Token
+                      token_type: End
+            - context: SelectBlockClause(From)
+              elements:
+                - type: Token
+                  token_type: From
+                - type: Token
+                  token_type: Identifier
+                  value: "table"
+        - type: Token
+          token_type: EOF
+
+  - name: nested_case_in_function
+    sql: "SELECT func(CASE WHEN x = 1 THEN 'one' END) FROM table"
+    ast:
+      context: Root
+      elements:
+        - context: Stmt
+          elements:
+            - context: SelectBlockClause(SelectFields)
+              elements:
+                - type: Token
+                  token_type: Select
+                - type: Token
+                  token_type: Identifier
+                  value: "func"
+                - context: Parens(Function)
+                  elements:
+                    - type: Token
+                      token_type: LeftParen
+                    - context: CaseStatement(Root)
+                      elements:
+                        - type: Token
+                          token_type: Case
+                        - context: CaseStatement(WhenThen)
+                          elements:
+                            - context: CaseStatement(When)
+                              elements:
+                                - type: Token
+                                  token_type: When
+                                - type: Token
+                                  token_type: Identifier
+                                  value: "x"
+                                - type: Token
+                                  token_type: Operator
+                                  value: "="
+                                - type: Token
+                                  token_type: Number
+                                  value: "1"
+                            - context: CaseStatement(Then)
+                              elements:
+                                - type: Token
+                                  token_type: Then
+                                - type: Token
+                                  token_type: StringLiteral
+                                  value: "one"
+                        - type: Token
+                          token_type: End
+                    - type: Token
+                      token_type: RightParen
+            - context: SelectBlockClause(From)
+              elements:
+                - type: Token
+                  token_type: From
+                - type: Token
+                  token_type: Identifier
+                  value: "table"
+        - type: Token
+          token_type: EOF

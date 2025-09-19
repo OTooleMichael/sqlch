@@ -1,6 +1,7 @@
 use crate::dialect::Dialect;
 use crate::loose_parser::{
-    CaseClause, LooseAst, LooseAstBuilder, LooseAstElement, SqlClause, SqlContext,
+    BetweenClause, CaseClause, LooseAst, LooseAstBuilder, LooseAstElement, ParenType, SqlClause,
+    SqlContext,
 };
 use crate::tokenizer::{CommentType, Token, TokenType};
 use serde::Deserialize;
@@ -87,6 +88,11 @@ impl FormatAst {
     pub fn walk(&self) -> WalkIter<'_> {
         WalkIter::new(self)
     }
+
+    pub fn get_elements(self) -> Vec<FormatElement> {
+        self.elements
+    }
+
     pub fn push(&mut self, element: FormatElement) {
         self.elements.push(element);
     }
@@ -178,7 +184,7 @@ fn convert_loose_to_format_elements(element: &LooseAstElement) -> FormatElement 
 }
 
 impl FormatAstBuilder {
-    fn new(_dialect: Dialect) -> Self {
+    fn new() -> Self {
         Self
     }
 
@@ -207,10 +213,22 @@ impl FormatAstBuilder {
         let mut result = Vec::new();
 
         match token.token_type {
+            TokenType::SemiColon => {
+                return vec![
+                    FormatElement::HardBreak,
+                    FormatElement::Token(token.clone()),
+                    FormatElement::LineGap,
+                ]
+            }
             TokenType::RightParen => {
                 result.push(FormatElement::SoftLine);
                 result.push(FormatElement::Dedent);
                 result.push(FormatElement::Token(token.clone()));
+            }
+            TokenType::Colon | TokenType::DoubleColon => {
+                result.push(FormatElement::NoSpace);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::NoSpace);
             }
             TokenType::Comma => {
                 result.push(FormatElement::NoSpace);
@@ -226,7 +244,12 @@ impl FormatAstBuilder {
                 result.push(FormatElement::Token(token.clone()));
                 result.push(FormatElement::Space);
             }
-            TokenType::And | TokenType::Or => {
+            TokenType::And => {
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::Or => {
                 result.push(FormatElement::SoftBreak);
                 result.push(FormatElement::Token(token.clone()));
                 result.push(FormatElement::Space);
@@ -368,6 +391,19 @@ impl FormatAstBuilder {
                 result.push(FormatElement::Token(token.clone()));
                 result.push(FormatElement::Space);
             }
+            TokenType::Extract => {
+                result.push(FormatElement::Token(token.clone()));
+                // Don't add space if next element is Parens(Extract)
+                match next_token {
+                    Some(FormatElement::Group(group)) => {
+                        if matches!(group.context, SqlContext::Parens(ParenType::Extract)) {
+                            return result;
+                        }
+                    }
+                    _ => {}
+                }
+                result.push(FormatElement::Space);
+            }
             TokenType::EOF => {
                 result.push(FormatElement::Token(token.clone()));
             }
@@ -418,6 +454,29 @@ impl FormatAstBuilder {
         let mut results = Vec::new();
         let mut new_elements = Vec::new();
         match &group.context {
+            SqlContext::BetweenClause(BetweenClause::Root) => {
+                new_elements.push(FormatElement::Indent);
+                self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
+                new_elements.push(FormatElement::Dedent);
+                new_elements.push(FormatElement::SoftBreak);
+            }
+            SqlContext::BetweenClause(BetweenClause::Val1) => {
+                if let Some(FormatElement::Token(token)) = group.elements.first() {
+                    if token.token_type == TokenType::Between {
+                        new_elements.push(FormatElement::Token(token.clone()));
+                        new_elements.push(FormatElement::Space);
+                        self.process_group_elements(
+                            &group.elements,
+                            1,
+                            &mut new_elements,
+                            context_stack,
+                        );
+                    }
+                }
+            }
+            SqlContext::BetweenClause(_) => {
+                self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
+            }
             SqlContext::SelectBlockClause(SqlClause::SelectFields) => {
                 if let Some(FormatElement::Token(token)) = group.elements.first() {
                     if token.token_type == TokenType::Select {
@@ -450,7 +509,6 @@ impl FormatAstBuilder {
             }
 
             SqlContext::SelectBlockClause(SqlClause::From) => {
-                // Handle FROM token first
                 if let Some(FormatElement::Token(token)) = group.elements.first() {
                     if token.token_type == TokenType::From {
                         new_elements.push(FormatElement::Token(token.clone()));
@@ -651,8 +709,15 @@ impl FormatAstBuilder {
                 }
             }
 
+            SqlContext::BetweenClause(_) => {
+                // Simple passthrough for now
+                self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
+            }
+
             SqlContext::Root => {
-                // Root context: just process all elements
+                self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
+            }
+            SqlContext::Stmt => {
                 self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
             }
         }
@@ -669,26 +734,24 @@ impl FormatAstBuilder {
 struct FormatRenderer<'a> {
     settings: &'a FormatSettings,
     dialect: Dialect,
-    ast: FormatAst,
     indent_level: usize,
     column: usize,
 }
 
 impl<'a> FormatRenderer<'a> {
-    fn new(dialect: Dialect, settings: &'a FormatSettings, ast: FormatAst) -> Self {
+    fn new(dialect: Dialect, settings: &'a FormatSettings) -> Self {
         Self {
             settings,
             dialect,
-            ast,
             indent_level: 0,
             column: 0,
         }
     }
 
-    fn render(&mut self) -> (String, Vec<FormatElement>) {
-        let elements = self.ast.elements().to_vec(); // Clone to avoid borrow checker issues
+    fn render(&mut self, ast: FormatAst) -> (String, Vec<FormatElement>) {
         let mut flat_format_list: Vec<FormatElement> = Vec::new();
         let mut temp_output = String::new();
+        let elements = ast.get_elements();
         self.render_group(&elements, &mut temp_output, &mut flat_format_list);
         let final_output = self.normalize_final_format_list(&flat_format_list);
         (final_output, flat_format_list)
@@ -702,7 +765,11 @@ impl<'a> FormatRenderer<'a> {
         current_indent: isize,
     ) {
         if comments.is_empty() {
-            output.push_str(line_str);
+            if output.is_empty() {
+                output.push_str(line_str.trim_start());
+            } else {
+                output.push_str(line_str);
+            }
             line_str.clear();
             return;
         };
@@ -750,7 +817,11 @@ impl<'a> FormatRenderer<'a> {
                 _ => {}
             }
         }
-        output.push_str(line_str);
+        if output.is_empty() {
+            output.push_str(line_str.trim_start());
+        } else {
+            output.push_str(line_str);
+        }
         comments.clear();
         line_str.clear();
     }
@@ -1201,22 +1272,9 @@ pub fn format_tokens(
     tokens: &[Token],
 ) -> Result<(String, Vec<FormatElement>), FormatterError> {
     let ast_builder = LooseAstBuilder::new(tokens.to_vec(), dialect.clone());
-    let loose_ast = ast_builder.build();
-    let format_ast = FormatAstBuilder::new(dialect.clone()).inject_format_elements(loose_ast);
-    let mut renderer = FormatRenderer::new(dialect.clone(), settings, format_ast);
-    Ok(renderer.render())
-}
-
-pub fn format_tokens_new(
-    settings: &FormatSettings,
-    dialect: &Dialect,
-    tokens: &[Token],
-) -> Result<(String, Vec<FormatElement>), FormatterError> {
-    let ast_builder = LooseAstBuilder::new(tokens.to_vec(), dialect.clone());
-    let format_ast =
-        FormatAstBuilder::new(dialect.clone()).inject_format_elements(ast_builder.build());
-    let mut renderer = FormatRenderer::new(dialect.clone(), settings, format_ast);
-    Ok(renderer.render())
+    let format_ast = FormatAstBuilder::new().inject_format_elements(ast_builder.build());
+    let mut renderer = FormatRenderer::new(dialect.clone(), settings);
+    Ok(renderer.render(format_ast))
 }
 
 #[derive(Debug)]
@@ -1259,6 +1317,41 @@ mod tests {
         serde_yaml::from_str(&content).expect("Failed to parse formatter YAML")
     }
 
+    fn pprint_format_ast(element: &FormatElement, indent: usize, item: usize) {
+        match element {
+            FormatElement::Token(token) => {
+                let index = item;
+                let indent_value = " ".repeat(indent * 4);
+                if let Some(str_) = &token.value {
+                    let value = str_.to_owned();
+                    let t_ = &token.token_type;
+                    println!("{indent_value}[{index}] {value:?} {t_:?}");
+                } else {
+                    let value = token.value();
+                    println!("{indent_value}[{index}] {value:?}");
+                };
+            }
+            FormatElement::Group(group) => {
+                let size_ = group.elements.len();
+                let ctx = &group.context;
+                if size_ == 0 {
+                    return;
+                }
+                let index = item;
+                let indent_value = " ".repeat(indent * 4);
+                println!("{indent_value}[{index}] - {ctx:?}  G{size_} -");
+                for (i, element) in group.elements.iter().enumerate() {
+                    let index = i + item;
+                    pprint_format_ast(element, indent + 1, index);
+                }
+            }
+            el => {
+                let index = item;
+                let indent_value = " ".repeat(indent * 4);
+                println!("{indent_value}[{index}] {el:?}");
+            }
+        }
+    }
     fn pprint_loose_ast(element: &LooseAstElement, indent: usize, item: usize) {
         match element {
             LooseAstElement::Token(token) => {
@@ -1353,14 +1446,12 @@ mod tests {
                 .unwrap_or_default();
 
             let dialect = Dialect::default();
-            // Format tokens
             let (actual_output, format_elements) =
-                format_tokens_new(&format_settings, &dialect, &tokenizer_result.tokens.clone())
+                format_tokens(&format_settings, &dialect, &tokenizer_result.tokens.clone())
                     .expect("Formatting should succeed");
 
-            // Compare with expected (trim trailing whitespace for comparison)
             let expected = test_case.expected.trim();
-            let actual = actual_output.trim();
+            let actual = &actual_output;
 
             if expected == actual {
                 continue;
@@ -1371,7 +1462,9 @@ mod tests {
             let ast_builder =
                 LooseAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
             let loose_ast = ast_builder.build();
-            pprint_loose_ast(&loose_ast.element.unwrap(), 0, 0);
+            pprint_loose_ast(loose_ast.element.as_ref().unwrap(), 0, 0);
+            let format_ast = FormatAstBuilder::new().inject_format_elements(loose_ast);
+            pprint_format_ast(&format_ast.get_elements()[0], 0, 0);
             println!("FormatAst for failing test '{}':", test_case.name);
             println!("\n");
             for element in format_elements {
@@ -1409,5 +1502,10 @@ mod tests {
     #[test]
     fn test_comments_formatting() {
         run_formatter_tests("test/fixtures/formatter/comments.yml");
+    }
+
+    #[test]
+    fn test_interesting_formatting() {
+        run_formatter_tests("test/fixtures/formatter/interesting.yml");
     }
 }

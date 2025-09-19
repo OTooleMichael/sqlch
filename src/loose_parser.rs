@@ -58,12 +58,20 @@ pub enum CaseClause {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum BetweenClause {
+    Root,
+    Val1,
+    Val2,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParenType {
     WindowOver,
     SubQuery,
     CTESubQuery,
     Function,
     DataType,
+    Extract,
     Other,
 }
 
@@ -83,8 +91,10 @@ pub enum SqlClause {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SqlContext {
     Root,
+    Stmt,
     SelectBlockClause(SqlClause),
     CaseStatement(CaseClause),
+    BetweenClause(BetweenClause),
     WithClause,
     Parens(ParenType),
     JinjaBlock,
@@ -126,6 +136,49 @@ impl LooseAstBuilder {
         false
     }
 
+    fn end_ctx(&mut self, ctx: &SqlContext) -> bool {
+        match ctx {
+            SqlContext::Root => true,
+            SqlContext::JinjaBlock => {
+                // Don't terminate JinjaBlock contexts - they should complete naturally
+                true
+            }
+            SqlContext::CaseStatement(CaseClause::Then)
+            | SqlContext::CaseStatement(CaseClause::WhenThen)
+            | SqlContext::CaseStatement(CaseClause::When)
+            | SqlContext::CaseStatement(CaseClause::Else) => {
+                self.group_end();
+                false
+            }
+            SqlContext::SelectBlockClause(_) => {
+                self.group_end();
+                false
+            }
+            SqlContext::Parens(_) => {
+                self.group_end();
+                false
+            }
+            _ => {
+                self.group_end();
+                false
+            }
+        }
+    }
+
+    fn end_while<F>(&mut self, stop_fn: F)
+    where
+        F: Fn(&SqlContext) -> bool,
+    {
+        while let Some((ctx, _)) = self.group_stack.last() {
+            if !stop_fn(ctx) {
+                break;
+            }
+            if self.end_ctx(&ctx.clone()) {
+                break;
+            }
+        }
+    }
+
     fn end_contexts<F>(&mut self, stop_fn: F, stop_type: StackPopType)
     where
         F: Fn(&SqlContext) -> bool,
@@ -138,27 +191,8 @@ impl LooseAstBuilder {
             if matches!(stopper, Some(StackPopType::Before)) {
                 break;
             }
-            match ctx {
-                SqlContext::Root => break,
-                SqlContext::JinjaBlock => {
-                    // Don't terminate JinjaBlock contexts - they should complete naturally
-                    break;
-                }
-                SqlContext::CaseStatement(CaseClause::Then)
-                | SqlContext::CaseStatement(CaseClause::WhenThen)
-                | SqlContext::CaseStatement(CaseClause::When)
-                | SqlContext::CaseStatement(CaseClause::Else) => {
-                    self.group_end();
-                }
-                SqlContext::SelectBlockClause(_) => {
-                    self.group_end();
-                }
-                SqlContext::Parens(_) => {
-                    self.group_end();
-                }
-                _ => {
-                    self.group_end();
-                }
+            if self.end_ctx(&ctx.clone()) {
+                break;
             }
             if matches!(stopper, Some(StackPopType::After)) {
                 break;
@@ -214,10 +248,17 @@ impl LooseAstBuilder {
     }
 
     pub fn build(mut self) -> LooseAst {
+        // Start the first statement
+        self.start_statement();
+
         while let Some(token) = self.advance() {
             self.process_token(token);
         }
         self.ast
+    }
+
+    fn start_statement(&mut self) {
+        self.group_start(SqlContext::Stmt);
     }
 
     fn process_token(&mut self, token: Token) {
@@ -263,6 +304,11 @@ impl LooseAstBuilder {
                 self.push(LooseAstElement::Token(token));
                 self.peek_left_paren_ctx(ParenType::DataType);
             }
+            TokenType::Extract => {
+                self.push(LooseAstElement::Token(token));
+                self.peek_left_paren_ctx(ParenType::Extract);
+            }
+            TokenType::Between => self.handle_between(token),
             TokenType::Keyword | TokenType::In => self.handle_keyword(token),
             TokenType::PartitionBy => self.handle_partition_by(token),
             TokenType::Case => self.handle_case(token),
@@ -284,7 +330,12 @@ impl LooseAstBuilder {
             TokenType::Identifier | TokenType::Number | TokenType::StringLiteral => {
                 self.handle_value(token)
             }
-            TokenType::Comma => self.handle_comma(token),
+            TokenType::Comma => {
+                self.end_while(|ctx| {
+                    return matches!(ctx, SqlContext::BetweenClause(_));
+                });
+                self.push(LooseAstElement::Token(token));
+            }
             TokenType::Dot => self.handle_dot(token),
             TokenType::LeftParen => self.handle_left_paren(token, ParenType::Other),
             TokenType::RightParen => self.handle_right_paren(token),
@@ -309,8 +360,15 @@ impl LooseAstBuilder {
 
                 self.push(LooseAstElement::Token(token));
             }
-            TokenType::And | TokenType::Or => {
+            TokenType::And => self.handle_and(token),
+            TokenType::Or => {
+                self.end_while(|ctx| {
+                    return matches!(ctx, SqlContext::BetweenClause(_));
+                });
                 self.push(LooseAstElement::Token(token));
+            }
+            TokenType::SemiColon => {
+                self.handle_semicolon(token);
             }
             _ => {
                 if let Some(next_token) = self.peek() {
@@ -352,6 +410,14 @@ impl LooseAstBuilder {
     }
 
     fn handle_from(&mut self, token: Token) {
+        // If we're directly inside an EXTRACT context, treat FROM as a keyword
+        if let Some((context, _)) = self.group_stack.last() {
+            if matches!(context, SqlContext::Parens(ParenType::Extract)) {
+                self.handle_keyword(token);
+                return;
+            }
+        }
+
         let ctx = SqlContext::SelectBlockClause(SqlClause::From);
         self.terminate_contexts_for(ctx.clone());
         self.group_start(ctx);
@@ -389,6 +455,23 @@ impl LooseAstBuilder {
 
     fn handle_case(&mut self, token: Token) {
         self.group_start(SqlContext::CaseStatement(CaseClause::Root));
+        self.push(LooseAstElement::Token(token));
+    }
+
+    fn handle_between(&mut self, token: Token) {
+        self.group_start(SqlContext::BetweenClause(BetweenClause::Root));
+        self.group_start(SqlContext::BetweenClause(BetweenClause::Val1));
+        self.push(LooseAstElement::Token(token));
+    }
+
+    fn handle_and(&mut self, token: Token) {
+        match self.current_context() {
+            SqlContext::BetweenClause(_) => {
+                self.group_end();
+            }
+            _ => {}
+        }
+        // Normal AND processing - revert to simple logic for now
         self.push(LooseAstElement::Token(token));
     }
 
@@ -453,10 +536,6 @@ impl LooseAstBuilder {
                 _ => {}
             }
         }
-    }
-
-    fn handle_comma(&mut self, token: Token) {
-        self.push(LooseAstElement::Token(token));
     }
 
     fn handle_dot(&mut self, token: Token) {
@@ -550,5 +629,259 @@ impl LooseAstBuilder {
     fn handle_jinja_end(&mut self, token: Token) {
         self.close_jinja_block();
         self.push(LooseAstElement::Token(token));
+    }
+
+    fn handle_semicolon(&mut self, token: Token) {
+        // Close all contexts except Root to end the current statement
+        self.end_contexts(|ctx| matches!(ctx, SqlContext::Root), StackPopType::Before);
+
+        // Add the semicolon token (though it's not in the YAML, it's part of the source)
+        self.push(LooseAstElement::Token(token));
+
+        // End the current Stmt context
+        if matches!(self.current_context(), SqlContext::Stmt) {
+            self.group_end();
+        }
+
+        // Start a new statement if there are more tokens
+        if !self.tokens.is_empty() {
+            self.start_statement();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tokenizer::Tokenizer;
+    use serde::Deserialize;
+    use std::fs;
+
+    #[derive(Debug, Deserialize)]
+    struct TestCase {
+        name: String,
+        sql: String,
+        ast: TestGroup,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestGroup {
+        context: String,
+        elements: Option<Vec<TestElement>>,
+    }
+
+    #[derive(Debug, Deserialize, Clone)]
+    #[serde(untagged)]
+    enum TestElement {
+        Token {
+            #[serde(rename = "type")]
+            element_type: String,
+            token_type: String,
+            value: Option<String>,
+        },
+        Group {
+            context: String,
+            elements: Option<Vec<TestElement>>,
+        },
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestFile {
+        file: Vec<TestCase>,
+    }
+
+    fn parse_context(context_str: &str) -> SqlContext {
+        match context_str {
+            "Root" => SqlContext::Root,
+            "Stmt" => SqlContext::Stmt,
+            "SelectBlockClause(SelectFields)" => {
+                SqlContext::SelectBlockClause(SqlClause::SelectFields)
+            }
+            "SelectBlockClause(From)" => SqlContext::SelectBlockClause(SqlClause::From),
+            "SelectBlockClause(Join)" => SqlContext::SelectBlockClause(SqlClause::Join),
+            "SelectBlockClause(Where)" => SqlContext::SelectBlockClause(SqlClause::Where),
+            "SelectBlockClause(GroupBy)" => SqlContext::SelectBlockClause(SqlClause::GroupBy),
+            "SelectBlockClause(Having)" => SqlContext::SelectBlockClause(SqlClause::Having),
+            "SelectBlockClause(Qualify)" => SqlContext::SelectBlockClause(SqlClause::Qualify),
+            "SelectBlockClause(OrderBy)" => SqlContext::SelectBlockClause(SqlClause::OrderBy),
+            "SelectBlockClause(Limit)" => SqlContext::SelectBlockClause(SqlClause::Limit),
+            "CaseStatement(Root)" => SqlContext::CaseStatement(CaseClause::Root),
+            "CaseStatement(WhenThen)" => SqlContext::CaseStatement(CaseClause::WhenThen),
+            "CaseStatement(When)" => SqlContext::CaseStatement(CaseClause::When),
+            "CaseStatement(Then)" => SqlContext::CaseStatement(CaseClause::Then),
+            "CaseStatement(Else)" => SqlContext::CaseStatement(CaseClause::Else),
+            "BetweenClause(Root)" => SqlContext::BetweenClause(BetweenClause::Root),
+            "BetweenClause(Val1)" => SqlContext::BetweenClause(BetweenClause::Val1),
+            "WithClause" => SqlContext::WithClause,
+            "Parens(WindowOver)" => SqlContext::Parens(ParenType::WindowOver),
+            "Parens(SubQuery)" => SqlContext::Parens(ParenType::SubQuery),
+            "Parens(CTESubQuery)" => SqlContext::Parens(ParenType::CTESubQuery),
+            "Parens(Function)" => SqlContext::Parens(ParenType::Function),
+            "Parens(DataType)" => SqlContext::Parens(ParenType::DataType),
+            "Parens(Extract)" => SqlContext::Parens(ParenType::Extract),
+            "Parens(Other)" => SqlContext::Parens(ParenType::Other),
+            "JinjaBlock" => SqlContext::JinjaBlock,
+            _ => panic!("Unknown context: {}", context_str),
+        }
+    }
+
+    fn compare_groups(actual: &LooseGroup, expected: &TestGroup, test_name: &str, path: &str) {
+        assert_eq!(
+            actual.context,
+            parse_context(&expected.context),
+            "Test '{}' failed at {}: Context mismatch. Expected {:?}, got {:?}",
+            test_name,
+            path,
+            expected.context,
+            actual.context
+        );
+
+        match &expected.elements {
+            Some(expected_elements) => {
+                assert_eq!(
+                    actual.elements.len(),
+                    expected_elements.len(),
+                    "Test '{}' failed at {}: Element count mismatch. Expected {}, got {}",
+                    test_name,
+                    path,
+                    expected_elements.len(),
+                    actual.elements.len()
+                );
+
+                for (i, (actual_element, expected_element)) in actual
+                    .elements
+                    .iter()
+                    .zip(expected_elements.iter())
+                    .enumerate()
+                {
+                    let element_path = format!("{}[{}]", path, i);
+                    compare_elements(actual_element, expected_element, test_name, &element_path);
+                }
+            }
+            None => {
+                // If no elements key is provided, don't check recursively - just match the context
+            }
+        }
+    }
+
+    fn compare_elements(
+        actual: &LooseAstElement,
+        expected: &TestElement,
+        test_name: &str,
+        path: &str,
+    ) {
+        match (actual, expected) {
+            (
+                LooseAstElement::Token(actual_token),
+                TestElement::Token {
+                    element_type,
+                    token_type,
+                    value,
+                },
+            ) => {
+                assert_eq!(
+                    element_type, "Token",
+                    "Test '{}' failed at {}: Expected Token element",
+                    test_name, path
+                );
+
+                let actual_token_type = match actual_token.token_type {
+                    crate::tokenizer::TokenType::Select => "Select",
+                    crate::tokenizer::TokenType::From => "From",
+                    crate::tokenizer::TokenType::Where => "Where",
+                    crate::tokenizer::TokenType::Having => "Having",
+                    crate::tokenizer::TokenType::Qualify => "Qualify",
+                    crate::tokenizer::TokenType::GroupBy => "GroupBy",
+                    crate::tokenizer::TokenType::OrderBy => "OrderBy",
+                    crate::tokenizer::TokenType::Limit => "Limit",
+                    crate::tokenizer::TokenType::Case => "Case",
+                    crate::tokenizer::TokenType::End => "End",
+                    crate::tokenizer::TokenType::When => "When",
+                    crate::tokenizer::TokenType::Then => "Then",
+                    crate::tokenizer::TokenType::Else => "Else",
+                    crate::tokenizer::TokenType::Identifier => "Identifier",
+                    crate::tokenizer::TokenType::Number => "Number",
+                    crate::tokenizer::TokenType::StringLiteral => "StringLiteral",
+                    crate::tokenizer::TokenType::Operator => "Operator",
+                    crate::tokenizer::TokenType::Comma => "Comma",
+                    crate::tokenizer::TokenType::Dot => "Dot",
+                    crate::tokenizer::TokenType::Star => "*",
+                    crate::tokenizer::TokenType::LeftParen => "LeftParen",
+                    crate::tokenizer::TokenType::RightParen => "RightParen",
+                    crate::tokenizer::TokenType::SemiColon => "SemiColon",
+                    crate::tokenizer::TokenType::EOF => "EOF",
+                    _ => "Other",
+                };
+
+                assert_eq!(
+                    token_type, actual_token_type,
+                    "Test '{}' failed at {}: Token type mismatch. Expected {}, got {}",
+                    test_name, path, token_type, actual_token_type
+                );
+
+                if let Some(expected_value) = value {
+                    assert_eq!(
+                        expected_value,
+                        &actual_token.value(),
+                        "Test '{}' failed at {}: Token value mismatch. Expected {}, got {}",
+                        test_name,
+                        path,
+                        expected_value,
+                        actual_token.value()
+                    );
+                }
+            }
+            (LooseAstElement::Group(actual_group), TestElement::Group { context, elements }) => {
+                let test_group = TestGroup {
+                    context: context.clone(),
+                    elements: elements.as_ref().map(|e| e.clone()),
+                };
+                compare_groups(actual_group, &test_group, test_name, path);
+            }
+            _ => panic!(
+                "Test '{}' failed at {}: Element type mismatch",
+                test_name, path
+            ),
+        }
+    }
+
+    fn load_test_file(path: &str) -> TestFile {
+        let content = fs::read_to_string(path).expect("Failed to read test file");
+        serde_yaml::from_str(&content).expect("Failed to parse YAML")
+    }
+
+    fn run_yaml_tests(test_file_path: &str) {
+        let test_file = load_test_file(test_file_path);
+
+        for test_case in test_file.file {
+            println!("Running: {}", test_case.name);
+
+            let mut tokenizer = Tokenizer::new(&test_case.sql);
+            let tokenizer_result = tokenizer
+                .tokenize()
+                .expect("Tokenization should succeed in tests");
+
+            let builder = LooseAstBuilder::new(tokenizer_result.tokens, Dialect::default());
+            let ast = builder.build();
+
+            match &ast.element {
+                Some(LooseAstElement::Group(actual_group)) => {
+                    compare_groups(actual_group, &test_case.ast, &test_case.name, "root");
+                }
+                _ => panic!("Test '{}' failed: Expected root group", test_case.name),
+            }
+
+            println!("  ✓ Passed");
+        }
+    }
+
+    #[test]
+    fn test_basic_loose_parser() {
+        run_yaml_tests("test/fixtures/loose_parser/basic.yml");
+    }
+
+    #[test]
+    fn test_case_statements_loose_parser() {
+        run_yaml_tests("test/fixtures/loose_parser/case_statements.yml");
     }
 }

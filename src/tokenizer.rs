@@ -20,6 +20,9 @@ pub enum TokenType {
     Number,
     Operator,
     Punctuation,
+    Colon,
+    DoubleColon,
+    SemiColon,
     Comma,
     Dot,
     As,
@@ -58,6 +61,8 @@ pub enum TokenType {
     With,
     WithRecursive,
     Qualify,
+    Extract,
+    Between,
     // Keywords that can appear standalone or in multi-word constructs
     Join,
     Union,
@@ -123,6 +128,8 @@ impl TokenType {
             TokenType::Case => Some("CASE"),
             TokenType::End => Some("END"),
             TokenType::Qualify => Some("QUALIFY"),
+            TokenType::Extract => Some("EXTRACT"),
+            TokenType::Between => Some("BETWEEN"),
 
             TokenType::And => Some("AND"),
             TokenType::Or => Some("OR"),
@@ -174,6 +181,9 @@ impl TokenType {
             TokenType::In => Some("IN"),
 
             // Punctuation with fixed values
+            TokenType::Colon => Some(":"),
+            TokenType::DoubleColon => Some("::"),
+            TokenType::SemiColon => Some(";"),
             TokenType::Comma => Some(","),
             TokenType::Dot => Some("."),
             TokenType::As => Some("AS"),
@@ -293,6 +303,10 @@ impl Token {
         }
     }
 
+    pub fn simple(token_type: TokenType, start: usize) -> Self {
+        Self::new(token_type, None, start)
+    }
+
     pub fn len(&self) -> usize {
         if let Some(val) = self.token_type.default_value() {
             return val.len();
@@ -380,7 +394,7 @@ impl<'a> Tokenizer<'a> {
             "DISTINCT", "TRUE", "FALSE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON",
             "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "UNION", "GROUP", "BY", "ORDER",
             "HAVING", "LIMIT", "OFFSET", "WITH", "CTE", "CASE", "WHEN", "THEN", "ELSE", "END",
-            "COPY", "INTO", "VALUES", "SET", "OVER", "VARCHAR", "DECIMAL",
+            "COPY", "INTO", "VALUES", "SET", "OVER", "VARCHAR", "DECIMAL", "EXTRACT", "BETWEEN",
         ] {
             keywords.insert(*kw, true);
         }
@@ -619,20 +633,15 @@ impl<'a> Tokenizer<'a> {
                     self.add_token(token)?;
                 }
                 Some(':') if self.peek() == Some(':') => {
-                    let token = self.tokenize_operator()?;
-                    self.add_token(token)?;
+                    let start = self.current_pos.map(|(b, _)| b).unwrap();
+                    self.advance();
+                    self.advance();
+                    self.add_token(Token::simple(TokenType::DoubleColon, start))?;
                 }
                 Some(':') => {
                     let start = self.current_pos.map(|(b, _)| b).unwrap();
                     self.advance();
-                    let _end = self.current_pos.map(|(b, _)| b).unwrap_or(self.input.len());
-                    self.add_token(Token {
-                        token_type: TokenType::Punctuation,
-                        value: Some(":".to_string()),
-                        start,
-                        pair: None,
-                        comments: Vec::new(),
-                    })?;
+                    self.add_token(Token::simple(TokenType::Colon, start))?;
                 }
                 Some(c) if "+-*/=<>!@$".contains(c) => {
                     let token = self.tokenize_operator()?;
@@ -734,6 +743,11 @@ impl<'a> Tokenizer<'a> {
                         comments: Vec::new(),
                     })?;
                 }
+                Some(';') => {
+                    let start = self.current_pos.map(|(b, _)| b).unwrap();
+                    self.advance();
+                    self.add_token(Token::simple(TokenType::SemiColon, start))?;
+                }
                 Some(c) if ";".contains(c) => {
                     let start = self.current_pos.map(|(b, _)| b).unwrap();
                     let ch = c.to_string();
@@ -809,6 +823,8 @@ impl<'a> Tokenizer<'a> {
             "WHERE" => TokenType::Where,
             "HAVING" => TokenType::Having,
             "QUALIFY" => TokenType::Qualify,
+            "EXTRACT" => TokenType::Extract,
+            "BETWEEN" => TokenType::Between,
             "WHEN" => TokenType::When,
             "THEN" => TokenType::Then,
             "ELSE" => TokenType::Else,
@@ -1441,6 +1457,8 @@ mod tests {
                         TokenType::By => "By",
                         TokenType::Order => "Order",
                         TokenType::Qualify => "Qualify",
+                        TokenType::Extract => "Extract",
+                        TokenType::Between => "Between",
                         TokenType::When => "When",
                         TokenType::Then => "Then",
                         TokenType::Else => "Else",
@@ -1481,6 +1499,9 @@ mod tests {
                         TokenType::NotExists => "NotExists",
                         TokenType::NotIn => "NotIn",
                         TokenType::CurrentRow => "CurrentRow",
+                        TokenType::Colon => "Colon",
+                        TokenType::DoubleColon => "DoubleColon",
+                        TokenType::SemiColon => "SemiColon",
                         TokenType::EOF => "EOF",
                     };
 
