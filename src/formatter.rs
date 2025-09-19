@@ -66,6 +66,33 @@ pub enum FormatElement {
     Group(Group), // Universal grouping - any () creates a group
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LooseGroup {
+    pub context: SqlContext,
+    pub elements: Vec<LooseAstElement>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LooseAstElement {
+    Token(Token),
+    Group(LooseGroup),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LooseAst {
+    elements: Vec<LooseAstElement>,
+}
+
+impl LooseAst {
+    pub fn push(&mut self, element: LooseAstElement) {
+        self.elements.push(element);
+    }
+
+    pub fn elements(&self) -> &[LooseAstElement] {
+        &self.elements
+    }
+}
+
 impl FormatElement {
     fn prio(&self) -> u8 {
         match self {
@@ -207,7 +234,6 @@ struct LooseAstBuilder {
     tokens: VecDeque<Token>,
     ast: FormatAst,
     group_stack: Vec<(SqlContext, Vec<FormatElement>)>,
-    format_mode: bool,
 }
 
 impl LooseAstBuilder {
@@ -215,7 +241,6 @@ impl LooseAstBuilder {
         let token_queue = VecDeque::from(tokens);
 
         Self {
-            format_mode: true,
             tokens: token_queue,
             ast: FormatAst::default(),
             group_stack: Vec::new(),
@@ -263,18 +288,12 @@ impl LooseAstBuilder {
                 | SqlContext::CaseStatement(CaseClause::WhenThen)
                 | SqlContext::CaseStatement(CaseClause::When)
                 | SqlContext::CaseStatement(CaseClause::Else) => {
-                    self.push(FormatElement::Dedent);
-                    self.push(FormatElement::SoftBreak);
                     self.group_end();
                 }
                 SqlContext::SelectBlockClause(_) => {
-                    self.push(FormatElement::Dedent);
-                    self.push(FormatElement::SoftBreak);
                     self.group_end();
                 }
                 SqlContext::Parens(_) => {
-                    self.push(FormatElement::Dedent);
-                    self.push(FormatElement::SoftLine);
                     self.group_end();
                 }
                 _ => {
@@ -319,10 +338,8 @@ impl LooseAstBuilder {
     }
 
     fn push(&mut self, element: FormatElement) {
-        if !self.format_mode
-            && !matches!(element, FormatElement::Token(_) | FormatElement::Group(_))
-        {
-            return;
+        if !matches!(element, FormatElement::Token(_) | FormatElement::Group(_)) {
+            panic!("Bad path we need to refactor out push for other format elements");
         }
         if let Some((_, current_group)) = self.group_stack.last_mut() {
             current_group.push(element);
@@ -366,18 +383,16 @@ impl LooseAstBuilder {
             }
             TokenType::OrderBy => {
                 if self.context_contains(SqlContext::Parens(ParenType::WindowOver), 4) {
-                    self.push(FormatElement::SoftBreak);
                     self.push(FormatElement::Token(token));
-                    self.push(FormatElement::Space);
+
                     return;
                 }
                 let token_type = token.token_type.clone();
                 self.handle_whereish(token, &token_type);
             }
             TokenType::Over => {
-                self.push(FormatElement::Space);
                 self.push(FormatElement::Token(token));
-                self.push(FormatElement::Space);
+
                 self.peek_left_paren_ctx(ParenType::WindowOver);
             }
             TokenType::As => {
@@ -434,14 +449,11 @@ impl LooseAstBuilder {
                     self.push(FormatElement::Token(token));
                     return;
                 }
-                self.push(FormatElement::SoftBreak);
+
                 self.push(FormatElement::Token(token));
-                self.push(FormatElement::Space);
             }
             TokenType::And | TokenType::Or => {
-                self.push(FormatElement::SoftBreak);
                 self.push(FormatElement::Token(token));
-                self.push(FormatElement::Space);
             }
             _ => {
                 if let Some(next_token) = self.peek() {
@@ -452,7 +464,6 @@ impl LooseAstBuilder {
                         }
                         _ => {
                             self.push(FormatElement::Token(token));
-                            self.push(FormatElement::Space);
                         }
                     }
                 }
@@ -470,7 +481,6 @@ impl LooseAstBuilder {
     fn handle_select(&mut self, token: Token) {
         if matches!(self.current_context(), SqlContext::WithClause) {
             self.group_end();
-            self.push(FormatElement::LineGap);
         }
         self.group_start(SqlContext::SelectBlockClause(SqlClause::SelectFields));
         self.push(FormatElement::Token(token));
@@ -478,13 +488,10 @@ impl LooseAstBuilder {
             if matches!(next_token.token_type, TokenType::Keyword)
                 && next_token.value().to_uppercase() == "DISTINCT"
             {
-                self.push(FormatElement::Space);
                 let distinct = self.advance().unwrap();
                 self.push(FormatElement::Token(distinct));
             }
         }
-        self.push(FormatElement::ShortBreak);
-        self.push(FormatElement::Indent);
     }
 
     fn handle_from(&mut self, token: Token) {
@@ -492,17 +499,14 @@ impl LooseAstBuilder {
         self.terminate_contexts_for(ctx.clone());
         self.group_start(ctx);
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Space);
     }
 
     fn handle_join(&mut self, token: Token) {
         let ctx = SqlContext::SelectBlockClause(SqlClause::Join);
         self.terminate_contexts_for(ctx.clone());
-        self.push(FormatElement::HardBreak);
+
         self.group_start(ctx);
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Space);
-        self.push(FormatElement::Indent);
     }
 
     fn handle_whereish(&mut self, token: Token, trigger: &TokenType) {
@@ -517,67 +521,48 @@ impl LooseAstBuilder {
         };
         let ctx = SqlContext::SelectBlockClause(cls);
         self.terminate_contexts_for(ctx.clone());
-        self.push(FormatElement::HardBreak);
+
         self.group_start(ctx);
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Space);
-        self.push(FormatElement::Indent);
-        self.push(FormatElement::Space);
     }
 
     fn handle_partition_by(&mut self, token: Token) {
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Space);
     }
 
     fn handle_case(&mut self, token: Token) {
         self.group_start(SqlContext::CaseStatement(CaseClause::Root));
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::SoftBreak);
-        self.push(FormatElement::Indent);
     }
 
     fn handle_when(&mut self, token: Token) {
         self.move_to_case_root();
-        self.push(FormatElement::SoftBreak);
+
         self.group_start(SqlContext::CaseStatement(CaseClause::WhenThen));
 
         self.group_start(SqlContext::CaseStatement(CaseClause::When));
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Indent);
-        self.push(FormatElement::Space);
     }
 
     fn handle_then(&mut self, token: Token) {
-        self.push(FormatElement::Dedent);
-        self.push(FormatElement::SoftBreak);
         self.group_end();
-        self.push(FormatElement::Indent);
-        self.push(FormatElement::SoftBreak);
 
         self.group_start(SqlContext::CaseStatement(CaseClause::Then));
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Indent);
-        self.push(FormatElement::Space);
     }
 
     fn handle_else(&mut self, token: Token) {
         self.move_to_case_root();
-        self.push(FormatElement::SoftBreak);
 
         self.group_start(SqlContext::CaseStatement(CaseClause::Else));
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Indent);
-        self.push(FormatElement::Space);
     }
 
     fn handle_end(&mut self, token: Token) {
         self.move_to_case_root();
-        self.push(FormatElement::Dedent);
-        self.push(FormatElement::SoftBreak);
+
         self.push(FormatElement::Token(token));
         self.group_end();
-        self.push(FormatElement::Space);
     }
 
     fn move_to_case_root(&mut self) {
@@ -590,46 +575,31 @@ impl LooseAstBuilder {
     fn handle_with(&mut self, token: Token) {
         self.group_start(SqlContext::WithClause);
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Space);
     }
 
     fn handle_keyword(&mut self, token: Token) {
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Space);
     }
 
     fn handle_value(&mut self, token: Token) {
         let curr_type = token.token_type.clone();
         self.push(FormatElement::Token(token));
-
         if let Some(next) = self.peek() {
             match next.token_type {
-                TokenType::Comma | TokenType::Dot => {}
                 TokenType::LeftParen => {
                     if curr_type == TokenType::Identifier {
                         let p_token = self.advance().unwrap();
                         self.handle_left_paren(p_token, ParenType::Function);
-                        return;
                     }
-                    self.push(FormatElement::Space);
                 }
-                _ => {
-                    self.push(FormatElement::Space);
-                }
+                TokenType::Comma | TokenType::Dot => {}
+                _ => {}
             }
         }
     }
 
     fn handle_comma(&mut self, token: Token) {
         self.push(FormatElement::Token(token));
-        match self.current_context() {
-            SqlContext::WithClause => {
-                self.push(FormatElement::LineGap);
-            }
-            _ => {
-                self.push(FormatElement::SoftBreak);
-            }
-        }
     }
 
     fn handle_dot(&mut self, token: Token) {
@@ -639,14 +609,10 @@ impl LooseAstBuilder {
     fn handle_operator(&mut self, token: Token) {
         match token.value().as_str() {
             "=" | "!=" | "<>" | ">" | ">=" | "<" | "<=" => {
-                self.push(FormatElement::Space);
                 self.push(FormatElement::Token(token));
-                self.push(FormatElement::Space);
             }
             _ => {
-                self.push(FormatElement::SoftBreak);
                 self.push(FormatElement::Token(token));
-                self.push(FormatElement::Space);
             }
         }
     }
@@ -657,8 +623,7 @@ impl LooseAstBuilder {
         if matches!(paren_type, ParenType::CTESubQuery) {
             self.group_start(SqlContext::Parens(paren_type));
             self.push(FormatElement::Token(token));
-            self.push(FormatElement::SoftLine);
-            self.push(FormatElement::Indent);
+
             return;
         }
 
@@ -673,14 +638,10 @@ impl LooseAstBuilder {
             Some(TokenType::Select) => {
                 self.group_start(SqlContext::Parens(ParenType::SubQuery));
                 self.push(FormatElement::Token(token));
-                self.push(FormatElement::SoftLine);
-                self.push(FormatElement::Indent);
             }
             _ => {
                 self.group_start(SqlContext::Parens(paren_type));
                 self.push(FormatElement::Token(token));
-                self.push(FormatElement::SoftLine);
-                self.push(FormatElement::Indent);
             }
         }
     }
@@ -699,29 +660,18 @@ impl LooseAstBuilder {
             |ctx| matches!(ctx, SqlContext::Parens(_)),
             StackPopType::Before,
         );
-        self.push(FormatElement::Dedent);
-        self.push(FormatElement::SoftLine);
+
         self.push(FormatElement::Token(token));
         self.group_end();
-        if let Some(next_token) = self.peek() {
-            if next_token.token_type == TokenType::Comma {
-                return;
-            }
-        };
-        self.push(FormatElement::Space);
     }
 
     fn handle_jinja_template(&mut self, token: Token) {
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Space);
     }
 
     fn handle_jinja_start(&mut self, token: Token) {
         self.group_start(SqlContext::JinjaBlock);
-        self.push(FormatElement::HardBreak);
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::Indent);
-        self.push(FormatElement::HardBreak);
     }
 
     fn close_jinja_block(&mut self) {
@@ -731,8 +681,7 @@ impl LooseAstBuilder {
             StackPopType::Before,
         );
         // Close the current Jinja content with dedent
-        self.push(FormatElement::Dedent);
-        self.push(FormatElement::HardBreak);
+
         self.group_end();
     }
 
@@ -743,9 +692,7 @@ impl LooseAstBuilder {
 
     fn handle_jinja_end(&mut self, token: Token) {
         self.close_jinja_block();
-        self.push(FormatElement::HardBreak);
         self.push(FormatElement::Token(token));
-        self.push(FormatElement::HardBreak);
     }
 }
 
@@ -1227,7 +1174,6 @@ impl FormatAstBuilder {
                 // Root context: just process all elements
                 self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
             }
-
         }
 
         context_stack.pop();
@@ -1784,8 +1730,7 @@ pub fn format_tokens_new(
     dialect: &Dialect,
     tokens: &[Token],
 ) -> Result<(String, Vec<FormatElement>), FormatterError> {
-    let mut ast_builder = LooseAstBuilder::new(tokens.to_vec(), dialect.clone());
-    ast_builder.format_mode = false;
+    let ast_builder = LooseAstBuilder::new(tokens.to_vec(), dialect.clone());
     let format_ast =
         FormatAstBuilder::new(dialect.clone()).inject_format_elements(ast_builder.build());
     let mut renderer = FormatRenderer::new(dialect.clone(), settings, format_ast);
@@ -1908,11 +1853,10 @@ mod tests {
     }
 
     fn run_formatter_tests(test_file_path: &str) {
-        run_formatter_tests_(test_file_path, false);
-        run_formatter_tests_(test_file_path, true);
+        run_formatter_tests_(test_file_path);
     }
 
-    fn run_formatter_tests_(test_file_path: &str, is_new: bool) {
+    fn run_formatter_tests_(test_file_path: &str) {
         let test_file = load_formatter_test_file(test_file_path);
 
         for test_case in test_file.file {
@@ -1929,12 +1873,9 @@ mod tests {
 
             let dialect = Dialect::default();
             // Format tokens
-            let (actual_output, format_elements) = if is_new {
+            let (actual_output, format_elements) =
                 format_tokens_new(&format_settings, &dialect, &tokenizer_result.tokens.clone())
-            } else {
-                format_tokens(&format_settings, &dialect, &tokenizer_result.tokens.clone())
-            }
-            .expect("Formatting should succeed");
+                    .expect("Formatting should succeed");
 
             // Compare with expected (trim trailing whitespace for comparison)
             let expected = test_case.expected.trim();
@@ -1945,33 +1886,13 @@ mod tests {
             }
 
             // Compare old vs new FormatASTs directly
-            if is_new {
-                println!("=== COMPARING OLD vs NEW FormatASTs ===");
-                let old_ast =
-                    LooseAstBuilder::new(tokenizer_result.tokens.clone(), dialect.clone()).build();
-                let mut structural_builder =
-                    LooseAstBuilder::new(tokenizer_result.tokens.clone(), dialect.clone());
-                structural_builder.format_mode = false;
-                let new_ast = FormatAstBuilder::new(dialect.clone())
-                    .inject_format_elements(structural_builder.build());
+            println!("\n");
+            let ast_builder =
+                LooseAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
+            let format_ast = ast_builder.build();
+            pprint_format_ast(format_ast.elements(), 0, 0);
 
-                println!("OLD AST:");
-                pprint_format_ast(old_ast.elements(), 0, 0);
-                println!("\nNEW AST:");
-                pprint_format_ast(new_ast.elements(), 0, 0);
-                println!("=== END COMPARISON ===\n");
-            } else {
-                println!("\n");
-                let ast_builder =
-                    LooseAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
-                let format_ast = ast_builder.build();
-                pprint_format_ast(format_ast.elements(), 0, 0);
-            }
-
-            println!(
-                "FormatAst for failing test '{}' is_new={is_new}:",
-                test_case.name
-            );
+            println!("FormatAst for failing test '{}':", test_case.name);
             println!("\n");
             for element in format_elements {
                 println!("{element:?}");
@@ -1979,7 +1900,7 @@ mod tests {
             println!("\n");
             let diff_output = create_visual_diff(expected, actual);
             panic!(
-                "Formatter test is_new={is_new} '{}' failed:\n{}",
+                "Formatter test  '{}' failed:\n{}",
                 test_case.name, diff_output
             );
         }
