@@ -99,4 +99,4 @@ file:
               name
           {% endif %}
       FROM users
-      LEFT JOIN {{ ref('my_table') }} USING(id )
+      LEFT JOIN {{ ref('my_table') }} USING(id)

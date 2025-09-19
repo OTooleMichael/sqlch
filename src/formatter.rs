@@ -25,9 +25,8 @@ impl<'a> Iterator for WalkIter<'a> {
             let iter = self.stack.last_mut()?;
             if let Some(elem) = iter.next() {
                 match elem {
-                    FormatElement::Group(children) => {
-                        // yield the group itself *first*, then descend
-                        self.stack.push(children.iter());
+                    FormatElement::Group(group) => {
+                        self.stack.push(group.elements.iter());
                         return Some(elem);
                     }
                     _ => return Some(elem),
@@ -47,9 +46,16 @@ enum StackPopType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Group {
+    pub context: SqlContext,
+    pub elements: Vec<FormatElement>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum FormatElement {
     Token(Token), // Keep token info for renderer decisions
     Space,
+    NoSpace,
     HardBreak, // SQL structural line breaks
     SoftBreak, // Can become space or break depending on line width
     ShortBreak,
@@ -57,7 +63,7 @@ pub enum FormatElement {
     LineGap,  // A new line, and a full empty line
     Indent,
     Dedent,
-    Group(Vec<FormatElement>), // Universal grouping - any () creates a group
+    Group(Group), // Universal grouping - any () creates a group
 }
 
 impl FormatElement {
@@ -67,7 +73,8 @@ impl FormatElement {
             FormatElement::HardBreak => 1,
             FormatElement::SoftBreak => 2,
             FormatElement::SoftLine => 3,
-            FormatElement::Space => 4,
+            FormatElement::NoSpace => 4,
+            FormatElement::Space => 5,
             FormatElement::Indent => 255,
             FormatElement::Dedent => 255,
             _ => 255,
@@ -154,13 +161,8 @@ impl From<&TestSettings> for FormatSettings {
     }
 }
 
-pub struct Formatter {
-    settings: FormatSettings,
-    dialect: Dialect,
-}
-
 #[derive(Debug, Clone, PartialEq)]
-enum CaseClause {
+pub enum CaseClause {
     Root,
     WhenThen,
     When,
@@ -169,7 +171,7 @@ enum CaseClause {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum ParenType {
+pub enum ParenType {
     WindowOver,
     SubQuery,
     CTESubQuery,
@@ -179,7 +181,7 @@ enum ParenType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum SqlClause {
+pub enum SqlClause {
     SelectFields,
     From,
     Join,
@@ -192,7 +194,7 @@ enum SqlClause {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum SqlContext {
+pub enum SqlContext {
     Root,
     SelectBlockClause(SqlClause),
     CaseStatement(CaseClause),
@@ -201,15 +203,14 @@ enum SqlContext {
     JinjaBlock,
 }
 
-struct FormatAstBuilder {
+struct LooseAstBuilder {
     tokens: VecDeque<Token>,
     ast: FormatAst,
-    context_stack: Vec<SqlContext>,
-    group_stack: Vec<Vec<FormatElement>>,
+    group_stack: Vec<(SqlContext, Vec<FormatElement>)>,
     format_mode: bool,
 }
 
-impl FormatAstBuilder {
+impl LooseAstBuilder {
     fn new(tokens: Vec<Token>, _dialect: Dialect) -> Self {
         let token_queue = VecDeque::from(tokens);
 
@@ -217,17 +218,19 @@ impl FormatAstBuilder {
             format_mode: true,
             tokens: token_queue,
             ast: FormatAst::default(),
-            context_stack: vec![SqlContext::Root],
             group_stack: Vec::new(),
         }
     }
 
-    fn current_context(&self) -> &SqlContext {
-        self.context_stack.last().unwrap_or(&SqlContext::Root)
+    fn current_context(&self) -> SqlContext {
+        self.group_stack
+            .last()
+            .map(|(ctx, _)| ctx.clone())
+            .unwrap_or(SqlContext::Root)
     }
 
     fn context_contains(&self, ctx: SqlContext, max_look_back: usize) -> bool {
-        for (i, element) in self.context_stack.iter().rev().enumerate() {
+        for (i, (element, _)) in self.group_stack.iter().rev().enumerate() {
             if i > max_look_back {
                 return false;
             }
@@ -238,26 +241,13 @@ impl FormatAstBuilder {
         false
     }
 
-    fn push_context(&mut self, context: SqlContext) {
-        self.context_stack.push(context);
-    }
-
-    fn pop_context(&mut self) -> Option<SqlContext> {
-        if self.context_stack.len() > 1 {
-            self.context_stack.pop()
-        } else {
-            None
-        }
-    }
-
     fn end_contexts<F>(&mut self, stop_fn: F, stop_type: StackPopType)
     where
         F: Fn(&SqlContext) -> bool,
     {
         let mut stopper: Option<StackPopType> = None;
-        while let Some(ctx_) = self.context_stack.last() {
-            let ctx = ctx_.clone();
-            if stop_fn(&ctx) {
+        while let Some((ctx, _)) = self.group_stack.last() {
+            if stop_fn(ctx) {
                 stopper = Some(stop_type.clone());
             }
             if matches!(stopper, Some(StackPopType::Before)) {
@@ -313,14 +303,19 @@ impl FormatAstBuilder {
     }
 
     fn group_start(&mut self, ctx: SqlContext) {
-        self.push_context(ctx);
-        self.group_stack.push(Vec::new());
+        self.group_stack.push((ctx, Vec::new()));
     }
 
     fn group_end(&mut self) {
-        let latest_group = self.group_stack.pop().unwrap_or_default();
-        self.push(FormatElement::Group(latest_group));
-        self.pop_context();
+        let (context, latest_group_elements) = self
+            .group_stack
+            .pop()
+            .unwrap_or((SqlContext::Root, Vec::new()));
+        let group = Group {
+            context,
+            elements: latest_group_elements,
+        };
+        self.push(FormatElement::Group(group));
     }
 
     fn push(&mut self, element: FormatElement) {
@@ -329,7 +324,7 @@ impl FormatAstBuilder {
         {
             return;
         }
-        if let Some(current_group) = self.group_stack.last_mut() {
+        if let Some((_, current_group)) = self.group_stack.last_mut() {
             current_group.push(element);
         } else {
             self.ast.push(element);
@@ -473,7 +468,7 @@ impl FormatAstBuilder {
     }
 
     fn handle_select(&mut self, token: Token) {
-        if self.current_context() == &SqlContext::WithClause {
+        if matches!(self.current_context(), SqlContext::WithClause) {
             self.group_end();
             self.push(FormatElement::LineGap);
         }
@@ -702,9 +697,12 @@ impl FormatAstBuilder {
     fn handle_right_paren(&mut self, token: Token) {
         self.end_contexts(
             |ctx| matches!(ctx, SqlContext::Parens(_)),
-            StackPopType::After,
+            StackPopType::Before,
         );
+        self.push(FormatElement::Dedent);
+        self.push(FormatElement::SoftLine);
         self.push(FormatElement::Token(token));
+        self.group_end();
         if let Some(next_token) = self.peek() {
             if next_token.token_type == TokenType::Comma {
                 return;
@@ -748,6 +746,496 @@ impl FormatAstBuilder {
         self.push(FormatElement::HardBreak);
         self.push(FormatElement::Token(token));
         self.push(FormatElement::HardBreak);
+    }
+}
+
+struct FormatAstBuilder;
+
+impl FormatAstBuilder {
+    fn new(_dialect: Dialect) -> Self {
+        Self
+    }
+
+    fn inject_format_elements(&self, structural_ast: FormatAst) -> FormatAst {
+        let mut result = FormatAst::default();
+        let group = Group {
+            context: SqlContext::Root,
+            elements: structural_ast.elements.clone(),
+        };
+        let mut context_stack = vec![group.context.clone()];
+        let new_group = self.process_group(&group, &mut context_stack);
+        for el in new_group {
+            result.push(el)
+        }
+        result
+    }
+
+    fn process_token(
+        &self,
+        token: &Token,
+        next_token: Option<&FormatElement>,
+        context_stack: &[SqlContext],
+    ) -> Vec<FormatElement> {
+        let mut result = Vec::new();
+
+        match token.token_type {
+            TokenType::RightParen => {
+                result.push(FormatElement::SoftLine);
+                result.push(FormatElement::Dedent);
+                result.push(FormatElement::Token(token.clone()));
+            }
+            TokenType::Comma => {
+                result.push(FormatElement::NoSpace);
+                result.push(FormatElement::Token(token.clone()));
+                if let Some(SqlContext::WithClause) = context_stack.last() {
+                    result.push(FormatElement::LineGap);
+                    return result;
+                }
+                result.push(FormatElement::SoftBreak);
+            }
+            TokenType::As => {
+                result.push(FormatElement::Space);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::And | TokenType::Or => {
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::Operator => match token.value().as_str() {
+                "=" | "!=" | "<>" | ">" | ">=" | "<" | "<=" => {
+                    result.push(FormatElement::Space);
+                    result.push(FormatElement::Token(token.clone()));
+                    result.push(FormatElement::Space);
+                }
+                _ => {
+                    result.push(FormatElement::SoftBreak);
+                    result.push(FormatElement::Token(token.clone()));
+                    result.push(FormatElement::Space);
+                }
+            },
+            TokenType::Star => {
+                if let Some(FormatElement::Token(next)) = next_token {
+                    if matches!(next.token_type, TokenType::RightParen) {
+                        result.push(FormatElement::Token(token.clone()));
+                        return result;
+                    }
+                }
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::Dot => {
+                result.push(FormatElement::Token(token.clone()));
+            }
+            TokenType::Identifier => {
+                result.push(FormatElement::Token(token.clone()));
+
+                match next_token {
+                    Some(FormatElement::Token(next)) => {
+                        if matches!(next.token_type, TokenType::Comma | TokenType::Dot) {
+                            return result;
+                        }
+                    }
+                    Some(FormatElement::Group(group)) => {
+                        if matches!(group.context, SqlContext::Parens(_)) {
+                            return result;
+                        }
+                    }
+                    _ => {}
+                }
+                result.push(FormatElement::Space);
+            }
+            TokenType::Number | TokenType::StringLiteral => {
+                result.push(FormatElement::Token(token.clone()));
+                if let Some(FormatElement::Token(next)) = next_token {
+                    if matches!(next.token_type, TokenType::Comma | TokenType::Dot) {
+                        return result;
+                    }
+                }
+                result.push(FormatElement::Space);
+            }
+            TokenType::In | TokenType::Keyword => {
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::Over => {
+                result.push(FormatElement::Space);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::Varchar | TokenType::Decimal => {
+                result.push(FormatElement::Token(token.clone()));
+            }
+            TokenType::PartitionBy => {
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::OrderBy => {
+                // OrderBy within window functions should also create a line break
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::Case => {
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::When => {
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::Then => {
+                result.push(FormatElement::Space);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::Else => {
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::End => {
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Dedent);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::With => {
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::InnerJoin
+            | TokenType::LeftJoin
+            | TokenType::RightJoin
+            | TokenType::FullJoin
+            | TokenType::LeftOuterJoin
+            | TokenType::RightOuterJoin
+            | TokenType::FullOuterJoin
+            | TokenType::CrossJoin
+            | TokenType::NaturalJoin
+            | TokenType::Join => {
+                result.push(FormatElement::SoftBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::LeftParen => {
+                result.push(FormatElement::Token(token.clone()));
+            }
+            TokenType::JinjaIf
+            | TokenType::JinjaFor
+            | TokenType::JinjaElif
+            | TokenType::JinjaElse => {
+                result.push(FormatElement::Token(token.clone()));
+            }
+            TokenType::JinjaEndif | TokenType::JinjaEndfor => {
+                result.push(FormatElement::HardBreak);
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::HardBreak);
+            }
+            TokenType::TemplateVariable | TokenType::TemplateBlock => {
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+            TokenType::EOF => {
+                result.push(FormatElement::Token(token.clone()));
+            }
+            _ => {
+                // Default case for remaining token types
+                result.push(FormatElement::Token(token.clone()));
+                result.push(FormatElement::Space);
+            }
+        }
+
+        result
+    }
+
+    fn process_group_elements(
+        &self,
+        elements: &[FormatElement],
+        skip: usize,
+        new_elements: &mut Vec<FormatElement>,
+        context_stack: &mut Vec<SqlContext>,
+    ) {
+        let elements_to_process: Vec<_> = elements.iter().skip(skip).collect();
+
+        for (i, element) in elements_to_process.iter().enumerate() {
+            match element {
+                FormatElement::Token(token) => {
+                    let next_token = elements_to_process.get(i + 1).copied();
+                    let mut processed = self.process_token(token, next_token, context_stack);
+                    new_elements.append(&mut processed);
+                }
+                FormatElement::Group(nested_group) => {
+                    let mut processed_nested = self.process_group(nested_group, context_stack);
+                    new_elements.append(&mut processed_nested);
+                }
+                _ => {
+                    let el = *element;
+                    new_elements.push(el.clone());
+                }
+            }
+        }
+    }
+
+    fn process_group(
+        &self,
+        group: &Group,
+        context_stack: &mut Vec<SqlContext>,
+    ) -> Vec<FormatElement> {
+        context_stack.push(group.context.clone());
+        let mut results = Vec::new();
+        let mut new_elements = Vec::new();
+        match &group.context {
+            SqlContext::SelectBlockClause(SqlClause::SelectFields) => {
+                if let Some(FormatElement::Token(token)) = group.elements.first() {
+                    if token.token_type == TokenType::Select {
+                        new_elements.push(FormatElement::Token(token.clone()));
+
+                        // Check for DISTINCT after SELECT
+                        let mut skip_count = 1;
+                        if let Some(FormatElement::Token(second_token)) = group.elements.get(1) {
+                            if second_token.token_type == TokenType::Keyword
+                                && second_token.value().as_str().to_uppercase() == "DISTINCT"
+                            {
+                                new_elements.push(FormatElement::Space);
+                                new_elements.push(FormatElement::Token(second_token.clone()));
+                                skip_count = 2;
+                            }
+                        }
+
+                        new_elements.push(FormatElement::ShortBreak);
+                        new_elements.push(FormatElement::Indent);
+                        self.process_group_elements(
+                            &group.elements,
+                            skip_count,
+                            &mut new_elements,
+                            context_stack,
+                        );
+                        new_elements.push(FormatElement::Dedent);
+                        new_elements.push(FormatElement::SoftBreak);
+                    }
+                }
+            }
+
+            SqlContext::SelectBlockClause(SqlClause::From) => {
+                // Handle FROM token first
+                if let Some(FormatElement::Token(token)) = group.elements.first() {
+                    if token.token_type == TokenType::From {
+                        new_elements.push(FormatElement::Token(token.clone()));
+                        new_elements.push(FormatElement::Space);
+                        self.process_group_elements(
+                            &group.elements,
+                            1,
+                            &mut new_elements,
+                            context_stack,
+                        );
+                        new_elements.push(FormatElement::Dedent);
+                        new_elements.push(FormatElement::SoftBreak);
+                    }
+                }
+            }
+
+            SqlContext::SelectBlockClause(_) => {
+                // Handle keyword token first (WHERE, HAVING, etc.)
+                if let Some(FormatElement::Token(token)) = group.elements.first() {
+                    new_elements.push(FormatElement::Token(token.clone()));
+                    new_elements.push(FormatElement::Space);
+                    new_elements.push(FormatElement::Indent);
+                    new_elements.push(FormatElement::Space);
+
+                    self.process_group_elements(
+                        &group.elements,
+                        1,
+                        &mut new_elements,
+                        context_stack,
+                    );
+                    new_elements.push(FormatElement::Dedent);
+                    results.push(FormatElement::HardBreak);
+                    results.push(FormatElement::Group(Group {
+                        context: group.context.clone(),
+                        elements: new_elements,
+                    }));
+                    return results;
+                }
+            }
+
+            SqlContext::Parens(_) => {
+                // Handle LeftParen token first
+                if let Some(FormatElement::Token(token)) = group.elements.first() {
+                    if token.token_type == TokenType::LeftParen {
+                        new_elements.push(FormatElement::Token(token.clone()));
+                        new_elements.push(FormatElement::SoftLine);
+                        new_elements.push(FormatElement::Indent);
+
+                        self.process_group_elements(
+                            &group.elements,
+                            1,
+                            &mut new_elements,
+                            context_stack,
+                        );
+                        new_elements.push(FormatElement::Space);
+                    }
+                }
+            }
+
+            SqlContext::JinjaBlock => {
+                // Jinja blocks: handle start/end tokens, process body
+                if let Some(FormatElement::Token(first_token)) = group.elements.first() {
+                    match first_token.token_type {
+                        TokenType::JinjaIf
+                        | TokenType::JinjaFor
+                        | TokenType::JinjaElif
+                        | TokenType::JinjaElse => {
+                            new_elements.push(FormatElement::HardBreak);
+                            new_elements.push(FormatElement::Token(first_token.clone()));
+                            new_elements.push(FormatElement::Indent);
+                            new_elements.push(FormatElement::HardBreak);
+
+                            self.process_group_elements(
+                                &group.elements,
+                                1,
+                                &mut new_elements,
+                                context_stack,
+                            );
+
+                            new_elements.push(FormatElement::Dedent);
+                        }
+                        _ => {
+                            self.process_group_elements(
+                                &group.elements,
+                                0,
+                                &mut new_elements,
+                                context_stack,
+                            );
+                        }
+                    }
+                }
+            }
+            SqlContext::WithClause => {
+                self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
+                new_elements.push(FormatElement::LineGap);
+            }
+
+            SqlContext::CaseStatement(case_clause) => {
+                match case_clause {
+                    CaseClause::Root => {
+                        // Root CASE statement - handle CASE keyword or END
+                        if let Some(FormatElement::Token(first_token)) = group.elements.first() {
+                            if first_token.token_type == TokenType::Case {
+                                new_elements.push(FormatElement::Token(first_token.clone()));
+                                new_elements.push(FormatElement::SoftBreak);
+                                new_elements.push(FormatElement::Indent);
+                                new_elements.push(FormatElement::SoftBreak);
+                                self.process_group_elements(
+                                    &group.elements,
+                                    1,
+                                    &mut new_elements,
+                                    context_stack,
+                                );
+                            }
+                        }
+                    }
+                    CaseClause::When => {
+                        // WHEN clause
+                        if let Some(FormatElement::Token(token)) = group.elements.first() {
+                            if token.token_type == TokenType::When {
+                                new_elements.push(FormatElement::Token(token.clone()));
+                                new_elements.push(FormatElement::Indent);
+                                new_elements.push(FormatElement::Space);
+                                self.process_group_elements(
+                                    &group.elements,
+                                    1,
+                                    &mut new_elements,
+                                    context_stack,
+                                );
+                                new_elements.push(FormatElement::Dedent);
+                                new_elements.push(FormatElement::SoftBreak);
+                            }
+                        }
+                    }
+                    CaseClause::Then => {
+                        // THEN clause
+                        if let Some(FormatElement::Token(token)) = group.elements.first() {
+                            if token.token_type == TokenType::Then {
+                                new_elements.push(FormatElement::SoftBreak);
+                                new_elements.push(FormatElement::Indent);
+                                new_elements.push(FormatElement::Token(token.clone()));
+                                new_elements.push(FormatElement::Space);
+
+                                self.process_group_elements(
+                                    &group.elements,
+                                    1,
+                                    &mut new_elements,
+                                    context_stack,
+                                );
+                                new_elements.push(FormatElement::Dedent);
+                                new_elements.push(FormatElement::SoftBreak);
+                                results.push(FormatElement::Indent);
+                                results.push(FormatElement::SoftBreak);
+                                results.push(FormatElement::Group(Group {
+                                    context: group.context.clone(),
+                                    elements: new_elements,
+                                }));
+                                return results;
+                            }
+                        }
+                    }
+                    CaseClause::WhenThen => {
+                        self.process_group_elements(
+                            &group.elements,
+                            0,
+                            &mut new_elements,
+                            context_stack,
+                        );
+                        new_elements.push(FormatElement::Dedent);
+                        new_elements.push(FormatElement::SoftBreak);
+                        results.push(FormatElement::Group(Group {
+                            context: group.context.clone(),
+                            elements: new_elements,
+                        }));
+                        results.push(FormatElement::SoftBreak);
+                        return results;
+                    }
+                    CaseClause::Else => {
+                        // ELSE clause
+                        if let Some(FormatElement::Token(token)) = group.elements.first() {
+                            if token.token_type == TokenType::Else {
+                                new_elements.push(FormatElement::SoftBreak);
+                                new_elements.push(FormatElement::Indent);
+                                new_elements.push(FormatElement::Token(token.clone()));
+                                new_elements.push(FormatElement::Space);
+
+                                self.process_group_elements(
+                                    &group.elements,
+                                    1,
+                                    &mut new_elements,
+                                    context_stack,
+                                );
+                                new_elements.push(FormatElement::Dedent);
+                                new_elements.push(FormatElement::SoftBreak);
+                            }
+                        }
+                    }
+                }
+            }
+
+            SqlContext::Root => {
+                // Root context: just process all elements
+                self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
+            }
+
+        }
+
+        context_stack.pop();
+        results.push(FormatElement::Group(Group {
+            context: group.context.clone(),
+            elements: new_elements,
+        }));
+        results
     }
 }
 
@@ -964,6 +1452,9 @@ impl<'a> FormatRenderer<'a> {
                 self.render_token(token, output);
                 flat_format_list.push(element.clone());
             }
+            FormatElement::NoSpace => {
+                flat_format_list.push(FormatElement::NoSpace);
+            }
             FormatElement::Space => {
                 output.push(' ');
                 flat_format_list.push(FormatElement::Space);
@@ -987,8 +1478,8 @@ impl<'a> FormatRenderer<'a> {
                 flat_format_list.push(FormatElement::Dedent);
                 self.indent_level = self.indent_level.saturating_sub(1);
             }
-            FormatElement::Group(group_elements) => {
-                self.render_group(group_elements, output, flat_format_list);
+            FormatElement::Group(group) => {
+                self.render_group(&group.elements, output, flat_format_list);
             }
             FormatElement::SoftBreak | FormatElement::ShortBreak | FormatElement::SoftLine => {
                 // These should be resolved by groups, but if they appear outside groups, treat as breaks
@@ -1044,7 +1535,7 @@ impl<'a> FormatRenderer<'a> {
 
         for element in elements {
             if let FormatElement::Group(group) = element {
-                if group.is_empty() {
+                if group.elements.is_empty() {
                     continue;
                 }
             }
@@ -1067,6 +1558,9 @@ impl<'a> FormatRenderer<'a> {
                                 flat_output.push(' ');
                                 flat_format_list.push(FormatElement::Space);
                             }
+                            Some(FormatElement::NoSpace) => {
+                                flat_format_list.push(FormatElement::NoSpace);
+                            }
                             _ => {}
                         }
                     }
@@ -1075,7 +1569,9 @@ impl<'a> FormatRenderer<'a> {
             }
             match element {
                 FormatElement::Group(nested_group) => {
-                    if let Some((nested_flat, more_flat)) = self.try_render_flat(nested_group) {
+                    if let Some((nested_flat, more_flat)) =
+                        self.try_render_flat(&nested_group.elements)
+                    {
                         flat_output.push_str(&nested_flat);
                         flat_format_list.extend(more_flat);
                     } else {
@@ -1136,7 +1632,7 @@ impl<'a> FormatRenderer<'a> {
 
         for element in elements {
             if let FormatElement::Group(group) = element {
-                if group.is_empty() {
+                if group.elements.is_empty() {
                     continue;
                 }
             };
@@ -1181,6 +1677,9 @@ impl<'a> FormatRenderer<'a> {
                                 output.push(' ');
                                 flat_format_list.push(FormatElement::Space);
                                 self.column += 1;
+                            }
+                            Some(FormatElement::NoSpace) => {
+                                flat_format_list.push(FormatElement::NoSpace);
                             }
                             _ => {}
                         }
@@ -1233,6 +1732,9 @@ impl<'a> FormatRenderer<'a> {
                 flat_format_list.push(FormatElement::Space);
                 self.column += 1;
             }
+            Some(FormatElement::NoSpace) => {
+                flat_format_list.push(FormatElement::NoSpace);
+            }
             _ => {}
         }
     }
@@ -1266,27 +1768,28 @@ impl<'a> FormatRenderer<'a> {
     }
 }
 
-impl Formatter {
-    pub fn new(settings: FormatSettings) -> Self {
-        Self {
-            settings,
-            dialect: Dialect::default(),
-        }
-    }
+pub fn format_tokens(
+    settings: &FormatSettings,
+    dialect: &Dialect,
+    tokens: &[Token],
+) -> Result<(String, Vec<FormatElement>), FormatterError> {
+    let ast_builder = LooseAstBuilder::new(tokens.to_vec(), dialect.clone());
+    let format_ast = ast_builder.build();
+    let mut renderer = FormatRenderer::new(dialect.clone(), settings, format_ast);
+    Ok(renderer.render())
+}
 
-    pub fn with_dialect(settings: FormatSettings, dialect: Dialect) -> Self {
-        Self { settings, dialect }
-    }
-
-    pub fn format_tokens(
-        &self,
-        tokens: &[Token],
-    ) -> Result<(String, Vec<FormatElement>), FormatterError> {
-        let ast_builder = FormatAstBuilder::new(tokens.to_vec(), self.dialect.clone());
-        let format_ast = ast_builder.build();
-        let mut renderer = FormatRenderer::new(self.dialect.clone(), &self.settings, format_ast);
-        Ok(renderer.render())
-    }
+pub fn format_tokens_new(
+    settings: &FormatSettings,
+    dialect: &Dialect,
+    tokens: &[Token],
+) -> Result<(String, Vec<FormatElement>), FormatterError> {
+    let mut ast_builder = LooseAstBuilder::new(tokens.to_vec(), dialect.clone());
+    ast_builder.format_mode = false;
+    let format_ast =
+        FormatAstBuilder::new(dialect.clone()).inject_format_elements(ast_builder.build());
+    let mut renderer = FormatRenderer::new(dialect.clone(), settings, format_ast);
+    Ok(renderer.render())
 }
 
 #[derive(Debug)]
@@ -1334,13 +1837,24 @@ mod tests {
             let index = i + item;
             let indent_value = " ".repeat(indent * 4);
             match element {
-                FormatElement::Group(subelements) => {
-                    let size_ = subelements.len();
+                FormatElement::Token(token) => {
+                    if let Some(str_) = &token.value {
+                        let value = str_.to_owned();
+                        let t_ = &token.token_type;
+                        println!("{indent_value}[{index}] {value:?} {t_:?}");
+                    } else {
+                        let value = token.value();
+                        println!("{indent_value}[{index}] {value:?}");
+                    };
+                }
+                FormatElement::Group(group) => {
+                    let size_ = group.elements.len();
+                    let ctx = &group.context;
                     if size_ == 0 {
                         continue;
                     }
-                    println!("{indent_value}[{index}] - Group s {size_} -");
-                    pprint_format_ast(subelements, indent + 1, index);
+                    println!("{indent_value}[{index}] - {ctx:?}  G{size_} -");
+                    pprint_format_ast(&group.elements, indent + 1, index);
                 }
                 _ => {
                     println!("{indent_value}[{index}] {element:?}");
@@ -1394,6 +1908,11 @@ mod tests {
     }
 
     fn run_formatter_tests(test_file_path: &str) {
+        run_formatter_tests_(test_file_path, false);
+        run_formatter_tests_(test_file_path, true);
+    }
+
+    fn run_formatter_tests_(test_file_path: &str, is_new: bool) {
         let test_file = load_formatter_test_file(test_file_path);
 
         for test_case in test_file.file {
@@ -1408,12 +1927,14 @@ mod tests {
                 .map(FormatSettings::from)
                 .unwrap_or_default();
 
-            let formatter = Formatter::new(format_settings);
-
+            let dialect = Dialect::default();
             // Format tokens
-            let (actual_output, format_elements) = formatter
-                .format_tokens(&tokenizer_result.tokens)
-                .expect("Formatting should succeed");
+            let (actual_output, format_elements) = if is_new {
+                format_tokens_new(&format_settings, &dialect, &tokenizer_result.tokens.clone())
+            } else {
+                format_tokens(&format_settings, &dialect, &tokenizer_result.tokens.clone())
+            }
+            .expect("Formatting should succeed");
 
             // Compare with expected (trim trailing whitespace for comparison)
             let expected = test_case.expected.trim();
@@ -1422,28 +1943,43 @@ mod tests {
             if expected == actual {
                 continue;
             }
-            println!("FormatAst for failing test '{}':", test_case.name);
-            println!("\n");
-            let mut ast_b =
-                FormatAstBuilder::new(tokenizer_result.tokens.clone(), formatter.dialect.clone());
-            ast_b.format_mode = false;
-            let format_ = ast_b.build();
-            pprint_format_ast(format_.elements(), 0, 0);
-            for token in format_.walk() {
-                println!("{token:?}");
+
+            // Compare old vs new FormatASTs directly
+            if is_new {
+                println!("=== COMPARING OLD vs NEW FormatASTs ===");
+                let old_ast =
+                    LooseAstBuilder::new(tokenizer_result.tokens.clone(), dialect.clone()).build();
+                let mut structural_builder =
+                    LooseAstBuilder::new(tokenizer_result.tokens.clone(), dialect.clone());
+                structural_builder.format_mode = false;
+                let new_ast = FormatAstBuilder::new(dialect.clone())
+                    .inject_format_elements(structural_builder.build());
+
+                println!("OLD AST:");
+                pprint_format_ast(old_ast.elements(), 0, 0);
+                println!("\nNEW AST:");
+                pprint_format_ast(new_ast.elements(), 0, 0);
+                println!("=== END COMPARISON ===\n");
+            } else {
+                println!("\n");
+                let ast_builder =
+                    LooseAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
+                let format_ast = ast_builder.build();
+                pprint_format_ast(format_ast.elements(), 0, 0);
             }
-            let ast_builder =
-                FormatAstBuilder::new(tokenizer_result.tokens.clone(), Dialect::default());
-            let format_ast = ast_builder.build();
-            pprint_format_ast(format_ast.elements(), 0, 0);
+
+            println!(
+                "FormatAst for failing test '{}' is_new={is_new}:",
+                test_case.name
+            );
             println!("\n");
             for element in format_elements {
                 println!("{element:?}");
             }
             println!("\n");
-            let diff_output = create_visual_diff(expected, &actual);
+            let diff_output = create_visual_diff(expected, actual);
             panic!(
-                "Formatter test '{}' failed:\n{}",
+                "Formatter test is_new={is_new} '{}' failed:\n{}",
                 test_case.name, diff_output
             );
         }
