@@ -23,3 +23,101 @@ file:
       WHERE date BETWEEN '2025-01-01'
           AND CURRENT_DATE
         AND piano
+
+  - name: window_functions_basic
+    input: |
+      SELECT
+        ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as rn,
+        employee_name,
+        salary
+      FROM employees
+      WINDOW w AS (PARTITION BY department ORDER BY hire_date)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 50
+    expected: |
+      SELECT
+        ROW_NUMBER() OVER (
+          PARTITION BY department
+          ORDER BY salary DESC
+        ) AS rn,
+        employee_name,
+        salary
+      FROM employees
+      WINDOW w AS (
+        PARTITION BY department
+        ORDER BY hire_date
+      )
+
+  - name: cast_expressions
+    input: |
+      SELECT 
+        CAST(salary AS DECIMAL(10,2)) as formatted_salary,
+        CAST(hire_date AS VARCHAR(10)) as hire_date_str
+      FROM employees
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 80
+    expected: |
+      SELECT
+        CAST(salary AS DECIMAL(10, 2)) AS formatted_salary,
+        CAST(hire_date AS VARCHAR(10)) AS hire_date_str
+      FROM employees
+
+  - name: struct_expressions_bigquery
+    input: |
+      SELECT 
+        STRUCT(name AS employee_name, salary AS pay, department AS dept) as employee_info,
+        STRUCT(1 AS id, 'test' AS value) as test_struct
+      FROM employees
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 40
+    expected: |
+      SELECT
+        STRUCT(
+          name AS employee_name,
+          salary AS pay,
+          department AS dept
+        ) AS employee_info,
+        STRUCT(1 AS id, 'test' AS value) AS test_struct
+      FROM employees
+
+  - name: complex_window_with_struct_cast
+    input: |
+      SELECT 
+        CAST(ROW_NUMBER() OVER (PARTITION BY STRUCT(dept AS department, region AS area) ORDER BY salary DESC) AS VARCHAR(10)) as row_num_str,
+        STRUCT(name AS emp_name, CAST(salary AS DECIMAL(10,2)) AS formatted_salary) as emp_data
+      FROM employees
+      WINDOW ranking_window AS (PARTITION BY department ORDER BY performance_score DESC)
+    settings:
+      indent:
+        style: "spaces"
+        size: 2
+      line_width: 50
+    expected: |
+      SELECT
+        CAST(
+          ROW_NUMBER() OVER (
+            PARTITION BY STRUCT(
+              dept AS department,
+              region AS area
+            )
+            ORDER BY salary DESC
+          ) AS VARCHAR(10)
+        ) AS row_num_str,
+        STRUCT(
+          name AS emp_name,
+          CAST(salary AS DECIMAL(10, 2)) AS formatted_salary
+        ) AS emp_data
+      FROM employees
+      WINDOW ranking_window AS (
+        PARTITION BY department
+        ORDER BY performance_score DESC
+      )

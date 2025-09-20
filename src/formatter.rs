@@ -308,6 +308,7 @@ impl FormatAstBuilder {
                 result.push(FormatElement::Space);
             }
             TokenType::In | TokenType::Keyword => {
+                result.push(FormatElement::Space);
                 result.push(FormatElement::Token(token.clone()));
                 result.push(FormatElement::Space);
             }
@@ -393,22 +394,40 @@ impl FormatAstBuilder {
             }
             TokenType::Extract => {
                 result.push(FormatElement::Token(token.clone()));
-                // Don't add space if next element is Parens(Extract)
-                match next_token {
-                    Some(FormatElement::Group(group)) => {
-                        if matches!(group.context, SqlContext::Parens(ParenType::Extract)) {
-                            return result;
-                        }
+                if let Some(FormatElement::Group(group)) = next_token {
+                    if matches!(group.context, SqlContext::Parens(ParenType::Extract)) {
+                        return result;
                     }
-                    _ => {}
                 }
+                result.push(FormatElement::Space);
+            }
+            TokenType::Cast => {
+                result.push(FormatElement::Token(token.clone()));
+                if let Some(FormatElement::Group(group)) = next_token {
+                    if matches!(group.context, SqlContext::Parens(ParenType::Cast)) {
+                        return result;
+                    }
+                }
+                result.push(FormatElement::Space);
+            }
+            TokenType::Struct => {
+                result.push(FormatElement::Token(token.clone()));
+                // Don't add space if next element is Parens(Struct)
+                if let Some(FormatElement::Group(group)) = next_token {
+                    if matches!(group.context, SqlContext::Parens(ParenType::Struct)) {
+                        return result;
+                    }
+                }
+                result.push(FormatElement::Space);
+            }
+            TokenType::Window => {
+                result.push(FormatElement::Token(token.clone()));
                 result.push(FormatElement::Space);
             }
             TokenType::EOF => {
                 result.push(FormatElement::Token(token.clone()));
             }
             _ => {
-                // Default case for remaining token types
                 result.push(FormatElement::Token(token.clone()));
                 result.push(FormatElement::Space);
             }
@@ -525,6 +544,27 @@ impl FormatAstBuilder {
                 }
             }
 
+            SqlContext::SelectBlockClause(SqlClause::WindowClause) => {
+                // Handle WINDOW clause with specific formatting
+                if let Some(FormatElement::Token(token)) = group.elements.first() {
+                    new_elements.push(FormatElement::Token(token.clone()));
+                    new_elements.push(FormatElement::Space);
+
+                    self.process_group_elements(
+                        &group.elements,
+                        1,
+                        &mut new_elements,
+                        context_stack,
+                    );
+                }
+                results.push(FormatElement::HardBreak);
+                results.push(FormatElement::Group(Group {
+                    context: group.context.clone(),
+                    elements: new_elements,
+                }));
+                return results;
+            }
+
             SqlContext::SelectBlockClause(_) => {
                 // Handle keyword token first (WHERE, HAVING, etc.)
                 if let Some(FormatElement::Token(token)) = group.elements.first() {
@@ -563,7 +603,7 @@ impl FormatAstBuilder {
                             &mut new_elements,
                             context_stack,
                         );
-                        new_elements.push(FormatElement::Space);
+                        //new_elements.push(FormatElement::Space);
                     }
                 }
             }
@@ -707,11 +747,6 @@ impl FormatAstBuilder {
                         }
                     }
                 }
-            }
-
-            SqlContext::BetweenClause(_) => {
-                // Simple passthrough for now
-                self.process_group_elements(&group.elements, 0, &mut new_elements, context_stack);
             }
 
             SqlContext::Root => {
@@ -1376,7 +1411,7 @@ mod tests {
                     let index = i + item;
                     let indent_value = " ".repeat(indent * 4);
                     println!("{indent_value}[{index}] - {ctx:?}  G{size_} -");
-                    pprint_loose_ast(&element, indent + 1, index);
+                    pprint_loose_ast(element, indent + 1, index);
                 }
             }
         }

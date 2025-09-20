@@ -67,11 +67,14 @@ pub enum BetweenClause {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParenType {
     WindowOver,
+    WindowClause,
     SubQuery,
     CTESubQuery,
     Function,
     DataType,
     Extract,
+    Cast,
+    Struct,
     Other,
 }
 
@@ -86,6 +89,7 @@ pub enum SqlClause {
     Qualify,
     OrderBy,
     Limit,
+    WindowClause,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -295,10 +299,15 @@ impl LooseAstBuilder {
             }
             TokenType::As => {
                 self.handle_keyword(token);
-                if !matches!(self.current_context(), SqlContext::WithClause) {
-                    return;
+                match self.current_context() {
+                    SqlContext::WithClause => {
+                        self.peek_left_paren_ctx(ParenType::CTESubQuery);
+                    }
+                    SqlContext::SelectBlockClause(SqlClause::WindowClause) => {
+                        self.peek_left_paren_ctx(ParenType::WindowClause);
+                    }
+                    _ => {}
                 }
-                self.peek_left_paren_ctx(ParenType::CTESubQuery);
             }
             TokenType::Varchar | TokenType::Decimal => {
                 self.push(LooseAstElement::Token(token));
@@ -307,6 +316,17 @@ impl LooseAstBuilder {
             TokenType::Extract => {
                 self.push(LooseAstElement::Token(token));
                 self.peek_left_paren_ctx(ParenType::Extract);
+            }
+            TokenType::Cast => {
+                self.push(LooseAstElement::Token(token));
+                self.peek_left_paren_ctx(ParenType::Cast);
+            }
+            TokenType::Struct => {
+                self.push(LooseAstElement::Token(token));
+                self.peek_left_paren_ctx(ParenType::Struct);
+            }
+            TokenType::Window => {
+                self.handle_window(token);
             }
             TokenType::Between => self.handle_between(token),
             TokenType::Keyword | TokenType::In => self.handle_keyword(token),
@@ -331,9 +351,7 @@ impl LooseAstBuilder {
                 self.handle_value(token)
             }
             TokenType::Comma => {
-                self.end_while(|ctx| {
-                    return matches!(ctx, SqlContext::BetweenClause(_));
-                });
+                self.end_while(|ctx| matches!(ctx, SqlContext::BetweenClause(_)));
                 self.push(LooseAstElement::Token(token));
             }
             TokenType::Dot => self.handle_dot(token),
@@ -362,9 +380,7 @@ impl LooseAstBuilder {
             }
             TokenType::And => self.handle_and(token),
             TokenType::Or => {
-                self.end_while(|ctx| {
-                    return matches!(ctx, SqlContext::BetweenClause(_));
-                });
+                self.end_while(|ctx| matches!(ctx, SqlContext::BetweenClause(_)));
                 self.push(LooseAstElement::Token(token));
             }
             TokenType::SemiColon => {
@@ -465,11 +481,8 @@ impl LooseAstBuilder {
     }
 
     fn handle_and(&mut self, token: Token) {
-        match self.current_context() {
-            SqlContext::BetweenClause(_) => {
-                self.group_end();
-            }
-            _ => {}
+        if let SqlContext::BetweenClause(_) = self.current_context() {
+            self.group_end();
         }
         // Normal AND processing - revert to simple logic for now
         self.push(LooseAstElement::Token(token));
@@ -631,6 +644,13 @@ impl LooseAstBuilder {
         self.push(LooseAstElement::Token(token));
     }
 
+    fn handle_window(&mut self, token: Token) {
+        let ctx = SqlContext::SelectBlockClause(SqlClause::WindowClause);
+        self.terminate_contexts_for(ctx.clone());
+        self.group_start(ctx);
+        self.push(LooseAstElement::Token(token));
+    }
+
     fn handle_semicolon(&mut self, token: Token) {
         // Close all contexts except Root to end the current statement
         self.end_contexts(|ctx| matches!(ctx, SqlContext::Root), StackPopType::Before);
@@ -705,6 +725,9 @@ mod tests {
             "SelectBlockClause(Qualify)" => SqlContext::SelectBlockClause(SqlClause::Qualify),
             "SelectBlockClause(OrderBy)" => SqlContext::SelectBlockClause(SqlClause::OrderBy),
             "SelectBlockClause(Limit)" => SqlContext::SelectBlockClause(SqlClause::Limit),
+            "SelectBlockClause(WindowClause)" => {
+                SqlContext::SelectBlockClause(SqlClause::WindowClause)
+            }
             "CaseStatement(Root)" => SqlContext::CaseStatement(CaseClause::Root),
             "CaseStatement(WhenThen)" => SqlContext::CaseStatement(CaseClause::WhenThen),
             "CaseStatement(When)" => SqlContext::CaseStatement(CaseClause::When),
@@ -714,14 +737,17 @@ mod tests {
             "BetweenClause(Val1)" => SqlContext::BetweenClause(BetweenClause::Val1),
             "WithClause" => SqlContext::WithClause,
             "Parens(WindowOver)" => SqlContext::Parens(ParenType::WindowOver),
+            "Parens(WindowClause)" => SqlContext::Parens(ParenType::WindowClause),
             "Parens(SubQuery)" => SqlContext::Parens(ParenType::SubQuery),
             "Parens(CTESubQuery)" => SqlContext::Parens(ParenType::CTESubQuery),
             "Parens(Function)" => SqlContext::Parens(ParenType::Function),
             "Parens(DataType)" => SqlContext::Parens(ParenType::DataType),
             "Parens(Extract)" => SqlContext::Parens(ParenType::Extract),
+            "Parens(Cast)" => SqlContext::Parens(ParenType::Cast),
+            "Parens(Struct)" => SqlContext::Parens(ParenType::Struct),
             "Parens(Other)" => SqlContext::Parens(ParenType::Other),
             "JinjaBlock" => SqlContext::JinjaBlock,
-            _ => panic!("Unknown context: {}", context_str),
+            _ => panic!("Unknown context: {context_str}"),
         }
     }
 
@@ -754,7 +780,7 @@ mod tests {
                     .zip(expected_elements.iter())
                     .enumerate()
                 {
-                    let element_path = format!("{}[{}]", path, i);
+                    let element_path = format!("{path}[{i}]");
                     compare_elements(actual_element, expected_element, test_name, &element_path);
                 }
             }
@@ -781,8 +807,7 @@ mod tests {
             ) => {
                 assert_eq!(
                     element_type, "Token",
-                    "Test '{}' failed at {}: Expected Token element",
-                    test_name, path
+                    "Test '{test_name}' failed at {path}: Expected Token element"
                 );
 
                 let actual_token_type = match actual_token.token_type {
@@ -815,8 +840,7 @@ mod tests {
 
                 assert_eq!(
                     token_type, actual_token_type,
-                    "Test '{}' failed at {}: Token type mismatch. Expected {}, got {}",
-                    test_name, path, token_type, actual_token_type
+                    "Test '{test_name}' failed at {path}: Token type mismatch. Expected {token_type}, got {actual_token_type}"
                 );
 
                 if let Some(expected_value) = value {
@@ -834,14 +858,11 @@ mod tests {
             (LooseAstElement::Group(actual_group), TestElement::Group { context, elements }) => {
                 let test_group = TestGroup {
                     context: context.clone(),
-                    elements: elements.as_ref().map(|e| e.clone()),
+                    elements: elements.clone(),
                 };
                 compare_groups(actual_group, &test_group, test_name, path);
             }
-            _ => panic!(
-                "Test '{}' failed at {}: Element type mismatch",
-                test_name, path
-            ),
+            _ => panic!("Test '{test_name}' failed at {path}: Element type mismatch"),
         }
     }
 

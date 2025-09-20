@@ -66,14 +66,18 @@ file:
         value: "John"
 
   - name: numbers
-    sql: "SELECT 123, 45.67 FROM users"
+    sql: "SELECT 123, [45.67]::ARRAY<DECIMAL(9, 8)> FROM users"
     tokens:
       - type: Select
       - type: Number
         value: "123"
       - type: Comma
+      - type: LeftBracket
       - type: Number
-        value: "45.67"
+      - type: RightBracket
+      - type: DoubleColon
+      - type: Array
+        value: "ARRAY<DECIMAL(9, 8)>"
       - type: From
       - type: Identifier
         value: "users"

@@ -14,6 +14,8 @@ pub enum TokenType {
     // DataTypes
     Varchar,
     Decimal,
+    Array,
+
     Keyword,
     Identifier,
     StringLiteral,
@@ -87,6 +89,9 @@ pub enum TokenType {
     In,
     Row,
     Limit,
+    Window,
+    Cast,
+    Struct,
     // Multi-word SQL constructs
     OrderBy,
     GroupBy,
@@ -115,6 +120,7 @@ impl TokenType {
             // DataTypes
             TokenType::Varchar => Some("VARCHAR"),
             TokenType::Decimal => Some("DECIMAL"),
+            TokenType::Array => None,
             // SQL keywords with fixed values
             TokenType::Select => Some("SELECT"),
             TokenType::From => Some("FROM"),
@@ -168,6 +174,9 @@ impl TokenType {
             TokenType::Exists => Some("EXISTS"),
             TokenType::Row => Some("ROW"),
             TokenType::Limit => Some("LIMIT"),
+            TokenType::Window => Some("WINDOW"),
+            TokenType::Cast => Some("CAST"),
+            TokenType::Struct => Some("STRUCT"),
 
             // Internal tokens (usually not rendered standalone)
             TokenType::Inner => Some("INNER"),
@@ -353,9 +362,12 @@ impl Token {
     }
 
     pub fn value(&self) -> String {
-        match &self.value {
-            Some(v) => v.clone(),
-            None => match self.token_type.default_value() {
+        match (&self.token_type, &self.value) {
+            (TokenType::Array, Some(v)) => {
+                format!("ARRAY<{v}>")
+            }
+            (_, Some(v)) => v.clone(),
+            (_, None) => match self.token_type.default_value() {
                 Some(default) => default.to_string(),
                 None => panic!(
                     "Token {:?} requires a value but none was provided",
@@ -390,11 +402,63 @@ impl<'a> Tokenizer<'a> {
     pub fn new(input: &'a str) -> Self {
         let mut keywords = HashMap::new();
         for kw in &[
-            "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
-            "DISTINCT", "TRUE", "FALSE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON",
-            "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "UNION", "GROUP", "BY", "ORDER",
-            "HAVING", "LIMIT", "OFFSET", "WITH", "CTE", "CASE", "WHEN", "THEN", "ELSE", "END",
-            "COPY", "INTO", "VALUES", "SET", "OVER", "VARCHAR", "DECIMAL", "EXTRACT", "BETWEEN",
+            "SELECT",
+            "FROM",
+            "WHERE",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "CREATE",
+            "DROP",
+            "ALTER",
+            "DISTINCT",
+            "TRUE",
+            "FALSE",
+            "AND",
+            "OR",
+            "NOT",
+            "IN",
+            "IS",
+            "NULL",
+            "AS",
+            "ON",
+            "JOIN",
+            "INNER",
+            "LEFT",
+            "RIGHT",
+            "FULL",
+            "OUTER",
+            "UNION",
+            "GROUP",
+            "BY",
+            "ORDER",
+            "HAVING",
+            "LIMIT",
+            "OFFSET",
+            "WITH",
+            "CTE",
+            "CASE",
+            "WHEN",
+            "THEN",
+            "ELSE",
+            "END",
+            "COPY",
+            "INTO",
+            "VALUES",
+            "SET",
+            "OVER",
+            "VARCHAR",
+            "DECIMAL",
+            "ARRAY",
+            "EXTRACT",
+            "BETWEEN",
+            "WINDOW",
+            "CAST",
+            "STRUCT",
+            "DESC",
+            "ASC",
+            "DESCENDING",
+            "ASCENDING",
         ] {
             keywords.insert(*kw, true);
         }
@@ -806,14 +870,15 @@ impl<'a> Tokenizer<'a> {
         {
             self.advance();
         }
-        let end = self.current_pos.map(|(b, _)| b).unwrap_or(self.input.len());
-        let ident = &self.input[start..end];
+        let mut end = self.current_pos.map(|(b, _)| b).unwrap_or(self.input.len());
+        let mut ident = &self.input[start..end];
 
         // Check for special pairable tokens first
         let ident_upper = ident.to_uppercase();
         let token_type = match ident_upper.as_str() {
             "VARCHAR" => TokenType::Varchar,
             "DECIMAL" => TokenType::Decimal,
+            "ARRAY" => TokenType::Array,
             "SELECT" => TokenType::Select,
             "FROM" => TokenType::From,
             "AND" => TokenType::And,
@@ -855,18 +920,56 @@ impl<'a> Tokenizer<'a> {
             "IN" => TokenType::In,
             "ROW" => TokenType::Row,
             "LIMIT" => TokenType::Limit,
+            "WINDOW" => TokenType::Window,
+            "CAST" => TokenType::Cast,
+            "STRUCT" => TokenType::Struct,
             _ if self.keywords.contains_key(ident_upper.as_str()) => TokenType::Keyword,
             _ => TokenType::Identifier,
         };
 
+        if matches!(token_type, TokenType::Array) {
+            let mut pair = 0;
+            let mut is_angle_brace = false;
+            while let Some(char_) = self.current_char() {
+                match char_ {
+                    '<' => {
+                        pair += 1;
+                        is_angle_brace = true;
+                    }
+                    '>' => pair -= 1,
+                    _ => {}
+                };
+                if pair == 0 && !is_angle_brace {
+                    break;
+                }
+                if pair == 0 {
+                    self.advance();
+                    let start = end + 1;
+                    end = self.current_pos.map(|(b, _)| b).unwrap_or(self.input.len());
+                    ident = &self.input[start..(end - 1)];
+                    break;
+                }
+                self.advance();
+            }
+            if pair > 0 {
+                return Err(TokenizerError::UnmatchedToken {
+                    expected: "Array< was opened but never closed".to_string(),
+                    found: "".to_string(),
+                    position: start,
+                });
+            }
+        }
+
+        let value = if token_type.default_value().is_some() {
+            None
+        } else {
+            Some(ident.to_string())
+        };
+
         let token = Token {
-            token_type: token_type.clone(),
-            value: if token_type.default_value().is_some() {
-                None
-            } else {
-                Some(ident.to_string())
-            },
+            token_type,
             start,
+            value,
             pair: None,
             comments: Vec::new(),
         };
@@ -1415,6 +1518,7 @@ mod tests {
                 if let Some(ref expected_type) = expected.token_type {
                     let actual_type = match actual.token_type {
                         TokenType::Decimal => "Decimal",
+                        TokenType::Array => "Array",
                         TokenType::Varchar => "Varchar",
                         TokenType::Keyword => "Keyword",
                         TokenType::Or => "OR",
@@ -1478,6 +1582,9 @@ mod tests {
                         TokenType::Current => "Current",
                         TokenType::Row => "Row",
                         TokenType::Limit => "Limit",
+                        TokenType::Window => "Window",
+                        TokenType::Cast => "Cast",
+                        TokenType::Struct => "Struct",
                         TokenType::As => "As",
                         TokenType::On => "On",
                         TokenType::Over => "Over",

@@ -1,0 +1,1 @@
+SELECT name FROM employees WINDOW w AS (PARTITION BY department)
